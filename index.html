@@ -248,6 +248,7 @@ header.top{
   </header>
 
   <div id="errbar" class="errbar hidden"></div>
+  <div id="noticebar" class="errbar hidden" style="background:var(--accent-soft);border-bottom-color:var(--accent);color:var(--text)"></div>
 
   <!-- Empty state / drop zone -->
   <div id="landing" class="dropzone" tabindex="0">
@@ -511,14 +512,28 @@ function parseADM(text){
   return { strings, presentations: new Map(), kind: "adm" };
 }
 
-// Resolve $(string.X) / $(presentation.X) / !!X against the strings map.
-// Anything unresolved falls back to the raw token rather than failing.
+// Turn a bare string id into a readable label when the language file has no
+// entry for it (e.g. a policy newer than the shipped .adm). Strips a single
+// type prefix, splits underscores and camelCase/acronym boundaries.
+// "Pol_MajorVersionRollout" -> "Major Version Rollout".
+function humanizeId(id){
+  let s = String(id).replace(/^(Pol|Cat|Part|Explain|Sup|DropDown|List|Enum|ListBox|TextBox|CheckBox)_/i, "");
+  s = s.replace(/_/g, " ")
+       .replace(/([a-z0-9])([A-Z])/g, "$1 $2")     // camelCase boundary
+       .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")  // ACRONYMWord boundary
+       .replace(/\s+/g, " ").trim();
+  return s || String(id);
+}
+
+// Resolve $(string.X) / !!X against the strings map. A resolved value is used
+// verbatim; an UNRESOLVED token is humanized from its id (never left as the
+// raw "$(string.X)" token). $(presentation.X) is left untouched.
 function makeResolver(strings){
   return function resolve(s){
     if (s == null || s === "") return "";
     return String(s)
-      .replace(/\$\(string\.([^)]+)\)/g, (m, id) => strings.has(id) ? strings.get(id) : m)
-      .replace(/!!([A-Za-z0-9_]+)/g,     (m, id) => strings.has(id) ? strings.get(id) : m);
+      .replace(/\$\(string\.([^)]+)\)/g, (m, id) => strings.has(id) ? strings.get(id) : humanizeId(id))
+      .replace(/!!([A-Za-z0-9_]+)/g,     (m, id) => strings.has(id) ? strings.get(id) : humanizeId(id));
   };
 }
 
@@ -772,7 +787,7 @@ function buildMinimalADMX(rawAdmxText, model, configuredUids){
 
 const API = {
   decodeBuffer, parseXML, parseADMX, parseElement, parseADML, parseADM, makeResolver,
-  resolveRef, categoryChain, classToRoot, configOmaUri, ingestionOmaUri,
+  humanizeId, resolveRef, categoryChain, classToRoot, configOmaUri, ingestionOmaUri,
   configValueXml, elementDataXml, validateElement, policyValueIssues,
   buildMinimalADMX, xmlEscAttr, kids, kid, attr,
 };
@@ -793,12 +808,11 @@ root.ADMX = API;
 const C = window.ADMX;
 const $ = s => document.querySelector(s);
 
-// Resolve a display string, but fall back to a plain name when it stays an
-// unresolved token (e.g. "$(string.X)" with no language file loaded).
+// Resolve a display string. The resolver already humanizes unresolved tokens,
+// so we only fall back when there is nothing at all (e.g. no displayName attr).
 function resolvedOr(raw, fallback){
   const r = state.resolve(raw);
-  if (!r || r === raw || r.indexOf("$(") !== -1 || /^!!/.test(r)) return fallback;
-  return r;
+  return r ? r : fallback;
 }
 function polDisplay(p){ return resolvedOr(p.displayName, p.name); }
 
@@ -815,6 +829,8 @@ const state = {
 
 // pending files before both are chosen
 const pending = { admx: null, adml: null };
+// last generated output rows (for export/copy without a global leak)
+let lastRows = null;
 
 /* ---------------- file loading ---------------- */
 function readFileBuffer(file){
@@ -1180,7 +1196,7 @@ function renderEditor(){
   // explain pane
   const ex = state.resolve(p.explainText);
   $("#explain").style.display = "";
-  $("#explainText").textContent = ex && ex !== p.explainText ? ex : (ex || "No explain text provided.");
+  $("#explainText").textContent = ex || "No explain text provided.";
 }
 
 function renderElementInput(policy, el, cfg){
@@ -1258,11 +1274,12 @@ function renderElementInput(policy, el, cfg){
   return wrap;
 }
 
-// key/value (or value-only) grid editor for <list> elements
+// key/value (explicitValue) or value-only grid editor for <list> elements.
 function renderListEditor(policy, el, cfg){
   const box = document.createElement("div");
   cfg.values[el.id] = Array.isArray(cfg.values[el.id]) ? cfg.values[el.id] : [];
   const rows = cfg.values[el.id];
+  const commit = () => { state.configured.set(policy.uid, cfg); renderList(); refreshIssueBanner(policy, cfg); };
   const grid = document.createElement("div"); grid.className = "gridlist";
   const draw = () => {
     grid.innerHTML = "";
@@ -1271,25 +1288,46 @@ function renderListEditor(policy, el, cfg){
       gr.style.gridTemplateColumns = el.explicitValue ? "1fr 1fr auto" : "1fr auto";
       if (el.explicitValue){
         const k = document.createElement("input"); k.placeholder = "name"; k.className = "mono"; k.value = r.k || "";
-        k.oninput = () => { r.k = k.value; state.configured.set(policy.name, cfg); };
+        k.oninput = () => { r.k = k.value; commit(); };
         gr.appendChild(k);
       }
-      const v = document.createElement("input"); v.placeholder = el.explicitValue ? "value" : "value"; v.className = "mono";
+      const v = document.createElement("input"); v.placeholder = "value"; v.className = "mono";
       v.value = el.explicitValue ? (r.v || "") : (r.v ?? r ?? "");
-      v.oninput = () => { if (el.explicitValue) r.v = v.value; else rows[i] = { v: v.value }; state.configured.set(policy.name, cfg); };
+      v.oninput = () => { if (el.explicitValue) r.v = v.value; else rows[i] = { v: v.value }; commit(); };
       gr.appendChild(v);
       const del = document.createElement("button"); del.className = "mini"; del.textContent = "✕";
-      del.onclick = () => { rows.splice(i, 1); state.configured.set(policy.name, cfg); draw(); };
+      del.onclick = () => { rows.splice(i, 1); commit(); draw(); };
       gr.appendChild(del);
       grid.appendChild(gr);
     });
+    if (!rows.length){ const e = document.createElement("div"); e.className = "hint"; e.style.padding = "8px"; e.textContent = "No entries yet."; grid.appendChild(e); }
   };
   draw();
   box.appendChild(grid);
   const add = document.createElement("button"); add.className = "mini"; add.style.marginTop = "7px"; add.textContent = "+ Add row";
-  add.onclick = () => { rows.push(el.explicitValue ? { k: "", v: "" } : { v: "" }); state.configured.set(policy.name, cfg); draw(); };
+  add.onclick = () => { rows.push(el.explicitValue ? { k: "", v: "" } : { v: "" }); commit(); draw(); };
   box.appendChild(add);
+  if (!el.explicitValue){
+    const note = document.createElement("div"); note.className = "hint"; note.style.marginTop = "5px";
+    note.textContent = "Names auto-generated" + (el.valuePrefix ? " (" + el.valuePrefix + "1, " + el.valuePrefix + "2, ...)" : " (1, 2, 3, ...)");
+    box.appendChild(note);
+  }
   return box;
+}
+
+// Rebuild only the incomplete-fields summary in the editor (keeps input focus).
+function refreshIssueBanner(policy, cfg){
+  const host = document.querySelector("#editor .ed");
+  if (!host) return;
+  const old = host.querySelector(".ed-issues"); if (old) old.remove();
+  if (!cfg || cfg.state !== "enabled") return;
+  const issues = C.policyValueIssues(policy, cfg);
+  if (!issues.length) return;
+  const box = document.createElement("div"); box.className = "ed-issues";
+  const labels = new Map(policy.elements.map(el => [el.id, labelForElement(policy, el)]));
+  box.innerHTML = "<b>This setting is incomplete and will be excluded from output:</b><ul>" +
+    issues.map(i => "<li>" + escapeHtml(labels.get(i.id) || i.id) + " — " + escapeHtml(i.msg) + "</li>").join("") + "</ul>";
+  host.appendChild(box);
 }
 
 /* ---------------- counts / workspace transitions ---------------- */
@@ -1302,26 +1340,47 @@ function enterWorkspace(){
   $("#workspace").classList.remove("hidden");
   $("#footbar").classList.remove("hidden");
   ["appNameField", "profileField", "minimalField"].forEach(id => $("#" + id).style.display = "");
-  $("#resetBtn").style.display = ""; $("#genBtn").style.display = "";
+  $("#addLangBtn").style.display = ""; $("#resetBtn").style.display = ""; $("#genBtn").style.display = "";
   $("#appName").value = state.appName;
   $("#profileName").value = state.profileName;
+  updateSrcInfo();
+  renderTree(); renderList(); renderEditor(); updateCounts();
+}
+function updateSrcInfo(){
+  if (!state.model) return;
   const langTxt = state.langKind ? (state.admlFileName + " (" + state.langKind.toUpperCase() + ")") : "no language file";
   $("#srcInfo").textContent = state.admxFileName + " [" + state.encInfo.bom + "]  ·  " + langTxt;
-  renderTree(); renderList(); renderEditor(); updateCounts();
+}
+
+// OMA-URI area paths use ~ and / as separators, so the app label must not
+// contain those, whitespace, or other path-breaking characters.
+function sanitizeAppName(s){
+  return String(s == null ? "" : s).replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
 }
 
 /* ---------------- output generation ---------------- */
 function buildRows(){
-  const app = state.appName || "app";
+  const app = sanitizeAppName(state.appName) || "app";
   const rows = [];
-  const configuredNames = [...state.configured.keys()];
+  const byUid = new Map(state.model.policies.map(p => [p.uid, p]));
 
-  // ingestion row (only when >=1 configured)
+  // Partition configured policies into emittable vs incomplete. An Enabled
+  // policy with a missing/invalid required field is held back (never emitted
+  // as a bare <enabled/>), and listed for the user.
+  const ready = [], incomplete = [];
+  for (const [uid, cfg] of state.configured){
+    const p = byUid.get(uid);
+    if (!p) continue;
+    if (cfg.state === "enabled" && C.policyValueIssues(p, cfg).length) incomplete.push(p);
+    else ready.push({ p, cfg });
+  }
+
+  // ingestion row references only the policies actually emitted.
   let minResult = null, fullBytes = utf8Bytes(state.admxText);
-  if (configuredNames.length){
+  if (ready.length){
     let admxValue = state.admxText;
     if (state.minimal){
-      minResult = C.buildMinimalADMX(state.admxText, state.model, configuredNames);
+      minResult = C.buildMinimalADMX(state.admxText, state.model, ready.map(r => r.p.uid));
       if (minResult.ok) admxValue = minResult.xml;
     }
     rows.push({
@@ -1333,20 +1392,17 @@ function buildRows(){
     });
   }
 
-  // one row per configured setting
-  for (const name of configuredNames){
-    const p = state.model.policies.find(x => x.name === name);
-    if (!p) continue;
-    const cfg = state.configured.get(name);
+  // one row per emittable setting
+  for (const { p, cfg } of ready){
     rows.push({
       kind: "setting",
-      title: state.resolve(p.displayName) || p.name,
+      title: polDisplay(p),
       omaUri: C.configOmaUri(state.model, p, app, cfg.bothChoice),
       dataType: "String",
       value: C.configValueXml(p, cfg),
     });
   }
-  return { rows, minResult, fullBytes };
+  return { rows, minResult, fullBytes, incomplete };
 }
 
 function utf8Bytes(s){ return new TextEncoder().encode(s || "").length; }
@@ -1357,13 +1413,19 @@ function fmtBytes(n){
 }
 
 function openDrawer(){
-  const { rows, minResult, fullBytes } = buildRows();
+  const { rows, minResult, fullBytes, incomplete } = buildRows();
+  lastRows = rows;
   const body = $("#drawerBody"); body.innerHTML = "";
 
   if (!rows.length){
-    body.innerHTML = '<div class="ed-empty">No settings configured yet. Enable or disable at least one setting.</div>';
+    let msg = "No settings ready for output yet. Enable or disable at least one setting";
+    if (incomplete.length) msg += ", and complete the " + incomplete.length + " incomplete setting(s) listed in the editor";
+    body.innerHTML = '<div class="ed-empty">' + msg + ".</div>";
+    if (incomplete.length) body.appendChild(incompleteWarn(incomplete));
     showDrawer(); return;
   }
+
+  if (incomplete.length) body.appendChild(incompleteWarn(incomplete));
 
   // size readout
   const ingestion = rows.find(r => r.kind === "ingestion");
@@ -1384,8 +1446,16 @@ function openDrawer(){
   }
 
   rows.forEach((r, idx) => body.appendChild(renderOutputRow(r, idx)));
-  window._exportRows = rows;
   showDrawer();
+}
+
+// Inline warning listing Enabled-but-incomplete policies excluded from output.
+function incompleteWarn(incomplete){
+  const w = document.createElement("div"); w.className = "warn";
+  w.innerHTML = "<b>" + incomplete.length + " configured setting(s) are incomplete and were excluded</b> " +
+    "(a required field or dropdown selection is missing/invalid):<br>" +
+    incomplete.map(p => "&bull; " + escapeHtml(polDisplay(p)) + " <span style='opacity:.7'>(" + escapeHtml(p.name) + ")</span>").join("<br>");
+  return w;
 }
 
 function renderOutputRow(r, idx){
@@ -1432,21 +1502,28 @@ function downloadBlob(name, text, type){
   const a = document.createElement("a"); a.href = url; a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function currentRows(){ return lastRows || buildRows().rows; }
 function exportJson(){
-  const rows = window._exportRows || buildRows().rows;
-  const payload = { profileName: state.profileName, appName: state.appName, minimal: state.minimal,
+  const rows = currentRows();
+  const payload = { profileName: state.profileName, appName: sanitizeAppName(state.appName), minimal: state.minimal,
     settings: rows.map(r => ({ omaUri: r.omaUri, dataType: r.dataType, value: r.value })) };
-  downloadBlob((state.appName || "admx") + "-omauri.json", JSON.stringify(payload, null, 2), "application/json");
+  downloadBlob((sanitizeAppName(state.appName) || "admx") + "-omauri.json", JSON.stringify(payload, null, 2), "application/json");
+}
+// Guard against spreadsheet formula injection: cells that begin with = + - @
+// (or a leading control char) are prefixed with a single quote.
+function csvCell(s){
+  let v = String(s);
+  if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+  return '"' + v.replace(/"/g, '""') + '"';
 }
 function exportCsv(){
-  const rows = window._exportRows || buildRows().rows;
-  const esc = s => '"' + String(s).replace(/"/g, '""') + '"';
+  const rows = currentRows();
   const lines = ["OMA-URI,DataType,Value"];
-  rows.forEach(r => lines.push([esc(r.omaUri), esc(r.dataType), esc(r.value)].join(",")));
-  downloadBlob((state.appName || "admx") + "-omauri.csv", lines.join("\r\n"), "text/csv");
+  rows.forEach(r => lines.push([csvCell(r.omaUri), csvCell(r.dataType), csvCell(r.value)].join(",")));
+  downloadBlob((sanitizeAppName(state.appName) || "admx") + "-omauri.csv", lines.join("\r\n"), "text/csv");
 }
 function copyAll(){
-  const rows = window._exportRows || buildRows().rows;
+  const rows = currentRows();
   const txt = rows.map(r => "OMA-URI: " + r.omaUri + "\nData type: " + r.dataType + "\nValue:\n" + r.value).join("\n\n----\n\n");
   copy(txt);
 }
@@ -1457,6 +1534,8 @@ function hideDrawer(){ $("#drawer").classList.remove("open"); $("#scrim").classL
 function toast(msg){ const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 1400); }
 function showError(msg){ const e = $("#errbar"); e.classList.remove("hidden"); e.innerHTML = "⚠ " + escapeHtml(msg); }
 function hideError(){ $("#errbar").classList.add("hidden"); }
+function showNotice(msg){ const e = $("#noticebar"); e.classList.remove("hidden"); e.innerHTML = "ℹ " + escapeHtml(msg); }
+function hideNotice(){ $("#noticebar").classList.add("hidden"); }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 
 /* ---------------- wire up events ---------------- */
@@ -1470,11 +1549,23 @@ function init(){
   ["dragenter", "dragover"].forEach(ev => landing.addEventListener(ev, e => { e.preventDefault(); landing.classList.add("drag"); }));
   ["dragleave", "drop"].forEach(ev => landing.addEventListener(ev, e => { e.preventDefault(); if (ev === "drop" || e.target === landing) landing.classList.remove("drag"); }));
   landing.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
-  // allow dropping onto the whole document once loaded
+  // allow dropping onto the whole document at any time (before OR after load,
+  // so a language file can be added to an already-loaded ADMX)
   document.addEventListener("dragover", e => e.preventDefault());
-  document.addEventListener("drop", e => { e.preventDefault(); if (!state.model && e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+  document.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
 
-  $("#appName").oninput = e => { state.appName = e.target.value.trim() || "app"; };
+  $("#addLangBtn").onclick = () => $("#admlInput").click();
+
+  $("#appName").oninput = e => {
+    const raw = e.target.value, clean = sanitizeAppName(raw);
+    state.appName = clean || "app";
+    const fld = $("#appNameField"); let w = fld.querySelector(".warnmsg");
+    if (clean !== raw){
+      if (e.target.value !== clean) e.target.value = clean;
+      if (!w){ w = document.createElement("div"); w.className = "warnmsg"; fld.appendChild(w); }
+      w.textContent = "Removed characters not allowed in an OMA-URI path.";
+    } else if (w){ w.remove(); }
+  };
   $("#profileName").oninput = e => { state.profileName = e.target.value; };
   $("#search").oninput = e => { state.searchTerm = e.target.value.trim(); if (state.searchTerm) state.selCategory = null; renderList(); };
 
