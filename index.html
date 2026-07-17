@@ -1,0 +1,1499 @@
+<!-- ADMX -> Intune Custom OMA-URI Ingester -- single-file, offline, no build/CDN/network -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADMX Ingester -- Intune Custom OMA-URI Builder</title>
+<style>
+/* ============================ Design system ============================ *
+ * Aesthetic: a refined dark "administrative control surface" -- graphite
+ * ink, hairline borders, a single warm amber signal accent, monospace for
+ * every machine-facing string (OMA-URIs / XML). Light theme mirrors it.   */
+:root{
+  --ink:#14161b; --panel:#1b1e25; --panel-2:#21252e; --panel-3:#272c37;
+  --line:#333a47; --line-soft:#2a303b;
+  --text:#e7eaf0; --muted:#98a1b0; --faint:#6b7482;
+  --accent:#e7a53c; --accent-ink:#1a1206; --accent-soft:#3a2c12;
+  --enabled:#3ddc84; --disabled:#ff6b6b; --info:#5cc8ff;
+  --radius:10px; --radius-sm:7px;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono","Consolas",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI Variable","Segoe UI",Roboto,sans-serif;
+  --shadow:0 18px 50px -18px rgba(0,0,0,.7);
+}
+@media (prefers-color-scheme:light){
+  :root{
+    --ink:#eef0f3; --panel:#fbfcfd; --panel-2:#f3f5f8; --panel-3:#e9edf2;
+    --line:#d3d9e2; --line-soft:#e2e6ec;
+    --text:#1a1f2a; --muted:#5b6572; --faint:#8a94a3;
+    --accent:#b9781a; --accent-ink:#fff; --accent-soft:#f5e7cf;
+    --enabled:#16a34a; --disabled:#dc2626; --info:#0a84c2;
+    --shadow:0 18px 44px -20px rgba(30,40,60,.35);
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:var(--sans); color:var(--text); background:var(--ink);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(1100px 500px at 88% -8%, rgba(231,165,60,.10), transparent 60%),
+    radial-gradient(900px 500px at -5% 110%, rgba(92,200,255,.06), transparent 55%);
+}
+button{font-family:inherit;cursor:pointer}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:20px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:var(--faint)}
+.mono{font-family:var(--mono)}
+.micro{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);font-weight:600}
+
+/* ---- App shell ---- */
+.app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+header.top{
+  display:flex;align-items:center;gap:18px;padding:12px 20px;
+  border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  flex:0 0 auto;flex-wrap:wrap;
+}
+.brand{display:flex;align-items:center;gap:12px;min-width:max-content}
+.brand .glyph{
+  width:34px;height:34px;border-radius:9px;flex:0 0 auto;display:grid;place-items:center;
+  background:linear-gradient(150deg,var(--accent),#c07f1e);color:var(--accent-ink);
+  font-weight:800;font-size:17px;box-shadow:0 6px 18px -6px rgba(231,165,60,.6)}
+.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:-.01em}
+.brand p{margin:0;font-size:11px;color:var(--muted)}
+.top .spacer{flex:1 1 auto}
+.field{display:flex;flex-direction:column;gap:3px}
+.field label{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:600}
+.field input{
+  background:var(--panel-3);border:1px solid var(--line);color:var(--text);
+  border-radius:7px;padding:6px 9px;font-size:13px;min-width:150px;font-family:var(--mono)}
+.field input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+.seg{display:inline-flex;background:var(--panel-3);border:1px solid var(--line);border-radius:8px;padding:3px}
+.seg button{border:0;background:transparent;color:var(--muted);padding:5px 11px;border-radius:6px;font-size:12px;font-weight:600}
+.seg button.on{background:var(--accent);color:var(--accent-ink)}
+.btn{
+  border:1px solid var(--line);background:var(--panel-3);color:var(--text);
+  border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;display:inline-flex;gap:7px;align-items:center}
+.btn:hover{border-color:var(--faint)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ---- Workspace grid ---- */
+.work{flex:1 1 auto;display:grid;grid-template-columns:290px 1fr 380px;min-height:0}
+.pane{min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.pane + .pane{border-left:1px solid var(--line)}
+.pane-head{padding:11px 15px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;gap:9px;flex:0 0 auto;background:var(--panel)}
+.pane-body{overflow:auto;flex:1 1 auto}
+.pane.tree{background:var(--panel)}
+.pane.list{background:var(--ink)}
+.pane.editor{background:var(--panel)}
+
+/* ---- Tree ---- */
+.treewrap{padding:8px 8px 30px}
+.grp-title{display:flex;align-items:center;gap:8px;padding:9px 8px 6px;color:var(--muted);font-weight:700;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.grp-title .ic{color:var(--accent)}
+.tnode{user-select:none}
+.trow{display:flex;align-items:center;gap:5px;padding:5px 7px;border-radius:7px;cursor:pointer;color:var(--text);font-size:13px}
+.trow:hover{background:var(--panel-3)}
+.trow.sel{background:var(--accent-soft);color:var(--text)}
+.trow.sel .tname{color:var(--accent);font-weight:600}
+.twist{width:14px;flex:0 0 auto;color:var(--faint);font-size:10px;text-align:center;transition:transform .12s}
+.twist.open{transform:rotate(90deg)}
+.tname{flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tcount{font-size:10.5px;color:var(--faint);background:var(--panel-3);border-radius:20px;padding:1px 7px;font-family:var(--mono)}
+.trow.sel .tcount{background:rgba(0,0,0,.18)}
+.tchildren{margin-left:11px;border-left:1px solid var(--line-soft);padding-left:3px}
+.tempty{color:var(--faint);font-size:12px;padding:6px 14px;font-style:italic}
+
+/* ---- Settings list ---- */
+.searchbar{padding:10px 14px;border-bottom:1px solid var(--line-soft);background:var(--panel);flex:0 0 auto}
+.searchbar input{width:100%;background:var(--panel-3);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 11px;font-size:13px}
+.searchbar input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.crumb{padding:8px 15px;font-size:11.5px;color:var(--muted);border-bottom:1px solid var(--line-soft);background:var(--ink);font-family:var(--mono);white-space:nowrap;overflow:auto}
+.crumb b{color:var(--text);font-weight:600}
+.srow{display:flex;align-items:center;gap:11px;padding:11px 15px;border-bottom:1px solid var(--line-soft);cursor:pointer}
+.srow:hover{background:var(--panel)}
+.srow.sel{background:var(--panel);box-shadow:inset 3px 0 0 var(--accent)}
+.srow .sicon{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--faint)}
+.srow.st-enabled .sicon{background:var(--enabled);box-shadow:0 0 9px var(--enabled)}
+.srow.st-disabled .sicon{background:var(--disabled);box-shadow:0 0 9px var(--disabled)}
+.srow .sinfo{flex:1 1 auto;min-width:0}
+.srow .sname{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .smeta{font-size:11px;color:var(--faint);font-family:var(--mono)}
+.badge{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;padding:3px 8px;border-radius:20px;flex:0 0 auto;border:1px solid var(--line);color:var(--muted)}
+.badge.enabled{color:var(--enabled);border-color:color-mix(in srgb,var(--enabled) 45%,transparent);background:color-mix(in srgb,var(--enabled) 12%,transparent)}
+.badge.disabled{color:var(--disabled);border-color:color-mix(in srgb,var(--disabled) 45%,transparent);background:color-mix(in srgb,var(--disabled) 12%,transparent)}
+.badge.incomplete{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:var(--accent-soft)}
+.srow.st-incomplete .sicon{background:var(--accent);box-shadow:0 0 9px var(--accent)}
+.ed-issues{margin-top:14px;border:1px solid color-mix(in srgb,var(--accent) 55%,transparent);background:var(--accent-soft);border-radius:9px;padding:11px 13px;font-size:12.5px}
+.ed-issues b{display:block;margin-bottom:5px;color:var(--accent)}
+.ed-issues ul{margin:0;padding-left:18px}
+.field .warnmsg{font-size:10.5px;color:var(--disabled);margin-top:2px;font-family:var(--sans)}
+
+/* ---- Editor ---- */
+.ed-empty{padding:40px 24px;color:var(--faint);text-align:center;font-size:13px}
+.ed{padding:18px}
+.ed h2{margin:0 0 4px;font-size:16px;line-height:1.3}
+.ed .ed-sub{font-size:11.5px;color:var(--faint);font-family:var(--mono);margin-bottom:14px;word-break:break-all}
+.states{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:16px}
+.state-btn{border:1px solid var(--line);background:var(--panel-3);color:var(--muted);border-radius:9px;padding:10px 6px;font-size:12px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:5px}
+.state-btn .dot{width:9px;height:9px;border-radius:50%;background:var(--faint)}
+.state-btn.on{border-color:var(--accent);color:var(--text);background:var(--accent-soft)}
+.state-btn[data-s=enabled].on{border-color:var(--enabled);background:color-mix(in srgb,var(--enabled) 14%,transparent)}
+.state-btn[data-s=enabled].on .dot{background:var(--enabled)}
+.state-btn[data-s=disabled].on{border-color:var(--disabled);background:color-mix(in srgb,var(--disabled) 14%,transparent)}
+.state-btn[data-s=disabled].on .dot{background:var(--disabled)}
+.state-btn[data-s=enabled].on .dot{box-shadow:0 0 8px var(--enabled)}
+.elements{display:flex;flex-direction:column;gap:13px;margin-top:4px;padding-top:14px;border-top:1px dashed var(--line)}
+.el{display:flex;flex-direction:column;gap:5px}
+.el label{font-size:12px;font-weight:600;color:var(--text)}
+.el .hint{font-size:10.5px;color:var(--faint);font-family:var(--mono)}
+.el .req{color:var(--accent)}
+.el input,.el select,.el textarea{
+  background:var(--panel-3);border:1px solid var(--line);color:var(--text);
+  border-radius:7px;padding:8px 10px;font-size:13px;width:100%;font-family:var(--sans)}
+.el input.mono,.el textarea{font-family:var(--mono)}
+.el input:focus,.el select:focus,.el textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.el input.bad{border-color:var(--disabled);box-shadow:0 0 0 3px color-mix(in srgb,var(--disabled) 25%,transparent)}
+.el .err{font-size:11px;color:var(--disabled)}
+.class-toggle{display:flex;align-items:center;gap:9px;margin-bottom:14px;font-size:12px;color:var(--muted)}
+.gridlist{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.gridlist .glrow{display:grid;gap:6px;padding:6px;border-bottom:1px solid var(--line-soft)}
+.gridlist .glrow:last-child{border-bottom:0}
+.gridlist input{border-radius:5px}
+.mini{border:1px solid var(--line);background:var(--panel-3);color:var(--muted);border-radius:6px;padding:5px 9px;font-size:12px;font-weight:600;align-self:flex-start}
+
+.explain{padding:16px 18px;border-top:1px solid var(--line);background:var(--panel-2);flex:0 0 auto;max-height:34%;overflow:auto}
+.explain .micro{margin-bottom:7px;display:block}
+.explain p{margin:0;white-space:pre-wrap;font-size:12.5px;color:var(--muted);line-height:1.6}
+
+/* ---- Empty / loader state ---- */
+.dropzone{margin:auto;max-width:640px;padding:44px;text-align:center}
+.dropzone .big{
+  border:2px dashed var(--line);border-radius:18px;padding:46px 30px;background:var(--panel);
+  transition:border-color .15s,background .15s}
+.dropzone.drag .big{border-color:var(--accent);background:var(--accent-soft)}
+.dropzone h2{margin:18px 0 6px;font-size:22px;letter-spacing:-.02em}
+.dropzone p{margin:0 auto 22px;color:var(--muted);max-width:440px}
+.dz-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.dz-files{margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:8px;background:var(--panel-3);border:1px solid var(--line);border-radius:20px;padding:6px 13px;font-size:12px;font-family:var(--mono)}
+.chip .ok{color:var(--enabled)}
+.chip .no{color:var(--faint)}
+.hidden{display:none!important}
+
+/* ---- Output drawer ---- */
+.drawer-scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);z-index:40;opacity:0;pointer-events:none;transition:opacity .2s}
+.drawer-scrim.open{opacity:1;pointer-events:auto}
+.drawer{
+  position:fixed;top:0;right:0;height:100vh;width:min(760px,94vw);background:var(--panel);
+  border-left:1px solid var(--line);box-shadow:var(--shadow);z-index:41;transform:translateX(102%);
+  transition:transform .24s cubic-bezier(.4,.14,.2,1);display:flex;flex-direction:column}
+.drawer.open{transform:none}
+.drawer-head{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+.drawer-head h2{margin:0;font-size:16px;flex:1 1 auto}
+.drawer-body{overflow:auto;padding:16px 20px 40px}
+.size-readout{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.stat{flex:1 1 150px;border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:var(--panel-2)}
+.stat .k{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+.stat .v{font-size:19px;font-weight:700;font-family:var(--mono);margin-top:2px}
+.stat .v small{font-size:12px;color:var(--muted);font-weight:500}
+.stat.win .v{color:var(--enabled)}
+.orow{border:1px solid var(--line);border-radius:10px;margin-bottom:11px;overflow:hidden;background:var(--panel-2)}
+.orow-h{display:flex;align-items:center;gap:9px;padding:9px 12px;background:var(--panel-3);border-bottom:1px solid var(--line-soft)}
+.orow-h .tag{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:3px 8px;border-radius:5px}
+.orow-h .otitle{flex:1 1 auto;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.orow-b{padding:11px 12px;display:flex;flex-direction:column;gap:9px}
+.kv{display:flex;flex-direction:column;gap:3px}
+.kv .k{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);font-weight:600}
+.kv .val{font-family:var(--mono);font-size:12px;background:var(--ink);border:1px solid var(--line-soft);border-radius:6px;padding:8px 10px;word-break:break-all;white-space:pre-wrap;max-height:230px;overflow:auto}
+.orow-actions{display:flex;gap:8px;flex-wrap:wrap}
+.warn{border:1px solid color-mix(in srgb,var(--disabled) 50%,transparent);background:color-mix(in srgb,var(--disabled) 12%,transparent);color:var(--text);border-radius:9px;padding:11px 13px;margin-bottom:14px;font-size:12.5px}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--ink);padding:10px 18px;border-radius:9px;font-size:13px;font-weight:600;z-index:60;opacity:0;transition:.2s;box-shadow:var(--shadow)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.errbar{background:color-mix(in srgb,var(--disabled) 15%,transparent);border-bottom:1px solid var(--disabled);color:var(--text);padding:9px 20px;font-size:13px;display:flex;gap:10px;align-items:center}
+.footbar{display:flex;align-items:center;gap:12px;padding:9px 20px;border-top:1px solid var(--line);background:var(--panel);flex:0 0 auto;flex-wrap:wrap}
+.footbar .spacer{flex:1 1 auto}
+.count-pill{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.count-pill b{color:var(--accent)}
+</style>
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand">
+      <div class="glyph">/&gt;</div>
+      <div>
+        <h1>ADMX Ingester</h1>
+        <p>Group Policy &rarr; Intune Custom OMA-URI</p>
+      </div>
+    </div>
+    <div class="field" id="appNameField" style="display:none">
+      <label>App / namespace label</label>
+      <input id="appName" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field" id="profileField" style="display:none">
+      <label>Profile name</label>
+      <input id="profileName" spellcheck="false" autocomplete="off" style="font-family:var(--sans)">
+    </div>
+    <div class="spacer"></div>
+    <div class="field" id="minimalField" style="display:none">
+      <label>Ingested ADMX</label>
+      <div class="seg" id="minimalSeg">
+        <button data-min="1" class="on">Minimal</button>
+        <button data-min="0">Full</button>
+      </div>
+    </div>
+    <button class="btn" id="addLangBtn" style="display:none">+ Language file</button>
+    <button class="btn" id="resetBtn" style="display:none">New import</button>
+    <button class="btn primary" id="genBtn" style="display:none">Generate OMA-URI &rarr;</button>
+  </header>
+
+  <div id="errbar" class="errbar hidden"></div>
+
+  <!-- Empty state / drop zone -->
+  <div id="landing" class="dropzone" tabindex="0">
+    <div class="big">
+      <div class="micro">Offline &middot; client-side only &middot; nothing is uploaded</div>
+      <h2>Import an ADMX policy template</h2>
+      <p>Drop a <b>.admx</b> file plus its matching language file (<b>.adml</b> XML or legacy
+        <b>.adm</b> text). Files are read locally and decoded from UTF-16/UTF-8 automatically.</p>
+      <div class="dz-actions">
+        <button class="btn primary" id="pickAdmx">Choose .admx</button>
+        <button class="btn" id="pickAdml">Choose .adml / .adm</button>
+      </div>
+      <div class="dz-files">
+        <span class="chip"><span id="admxDot" class="no">&#9679;</span> <span id="admxName">no ADMX</span></span>
+        <span class="chip"><span id="admlDot" class="no">&#9679;</span> <span id="admlName">no language file</span></span>
+      </div>
+    </div>
+    <input type="file" id="admxInput" accept=".admx,.xml" class="hidden">
+    <input type="file" id="admlInput" accept=".adml,.adm,.xml,.txt" class="hidden">
+  </div>
+
+  <!-- Workspace -->
+  <div id="workspace" class="work hidden">
+    <section class="pane tree">
+      <div class="pane-head"><span class="micro">Policy tree</span></div>
+      <div class="pane-body"><div class="treewrap" id="tree"></div></div>
+    </section>
+
+    <section class="pane list">
+      <div class="searchbar"><input id="search" placeholder="Search all settings by name..." spellcheck="false"></div>
+      <div class="crumb" id="crumb">Select a category</div>
+      <div class="pane-body" id="settingsList"></div>
+    </section>
+
+    <section class="pane editor">
+      <div class="pane-head"><span class="micro">Setting editor</span></div>
+      <div class="pane-body" id="editor"><div class="ed-empty">Select a setting to configure it.</div></div>
+      <div class="explain" id="explain" style="display:none">
+        <span class="micro">Explain text</span>
+        <p id="explainText"></p>
+      </div>
+    </section>
+  </div>
+
+  <div class="footbar hidden" id="footbar">
+    <span class="count-pill">Configured settings: <b id="cfgCount">0</b></span>
+    <span class="count-pill" style="color:var(--faint)" id="srcInfo"></span>
+    <div class="spacer"></div>
+    <button class="btn" id="viewConfigured">View configured</button>
+  </div>
+</div>
+
+<!-- Output drawer -->
+<div class="drawer-scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <h2>Intune Custom OMA-URI settings</h2>
+    <button class="btn" id="copyAll">Copy all</button>
+    <button class="btn" id="exportJson">JSON</button>
+    <button class="btn" id="exportCsv">CSV</button>
+    <button class="btn" id="closeDrawer">Close</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ===================================================================== *
+ *  CORE START -- pure, DOM-parser-agnostic logic.                        *
+ *  Everything between CORE START/END references DOMParser, XMLSerializer *
+ *  and TextDecoder as free globals so a Node harness can inject its own  *
+ *  (xmldom) implementations and exercise the exact same code.            *
+ * ===================================================================== */
+(function(root){
+"use strict";
+
+/* ---------- 1. Encoding detection + decode -------------------------------
+ * Real-world ADMX/ADML files are frequently UTF-16LE with a BOM. Reading
+ * them as UTF-8 corrupts every other byte, so we sniff the raw bytes.     */
+function decodeBuffer(buf){
+  const b = new Uint8Array(buf);
+  let enc, start = 0, bomNote = "none";
+  if (b.length >= 2 && b[0] === 0xFF && b[1] === 0xFE){ enc = "utf-16le"; start = 2; bomNote = "UTF-16LE BOM"; }
+  else if (b.length >= 2 && b[0] === 0xFE && b[1] === 0xFF){ enc = "utf-16be"; start = 2; bomNote = "UTF-16BE BOM"; }
+  else if (b.length >= 3 && b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF){ enc = "utf-8"; start = 3; bomNote = "UTF-8 BOM"; }
+  else {
+    // No BOM: sniff interleaved NUL bytes in the first stretch of the file.
+    let nulEven = 0, nulOdd = 0, n = Math.min(b.length, 4000);
+    for (let i = 0; i < n; i++){ if (b[i] === 0x00){ if (i % 2) nulOdd++; else nulEven++; } }
+    if (nulOdd > n * 0.15){ enc = "utf-16le"; bomNote = "sniffed UTF-16LE"; }
+    else if (nulEven > n * 0.15){ enc = "utf-16be"; bomNote = "sniffed UTF-16BE"; }
+    else { enc = "utf-8"; bomNote = "assumed UTF-8"; }
+  }
+  const text = new TextDecoder(enc).decode(b.subarray(start));
+  return { text, encoding: enc, bom: bomNote };
+}
+
+/* ---------- small XML helpers (work in browser + xmldom) ---------------- */
+function parseXML(text){
+  const doc = new DOMParser().parseFromString(text, "text/xml");
+  const pe = doc.getElementsByTagName("parsererror");
+  if (pe && pe.length) throw new Error("XML is not well-formed: " + (pe[0].textContent || "").slice(0, 160));
+  if (!doc.documentElement) throw new Error("XML has no root element");
+  return doc;
+}
+// Direct element children with a given tag name (avoids descendant matches).
+function kids(el, tag){
+  const out = [];
+  if (!el) return out;
+  for (let c = el.firstChild; c; c = c.nextSibling){
+    if (c.nodeType === 1 && (c.localName || c.nodeName) === tag) out.push(c);
+  }
+  return out;
+}
+function kid(el, tag){ return kids(el, tag)[0] || null; }
+function attr(el, name){ return el && el.getAttribute ? (el.getAttribute(name) || "") : ""; }
+
+/* ---------- 2. Parse the ADMX ------------------------------------------- */
+function parseADMX(text){
+  const doc  = parseXML(text);
+  const root = doc.documentElement;
+  const model = {
+    revision: attr(root, "revision"),
+    schemaVersion: attr(root, "schemaVersion"),
+    target: { prefix: "", namespace: "" },
+    usings: [],
+    categories: new Map(),      // name -> {name,displayName,explainText,parentRef}
+    policies: [],
+    supportedOn: new Map(),      // name -> {name,displayName}
+  };
+
+  // policyNamespaces: target (its prefix seeds the OMA-URI app label) + usings.
+  const nsEl = kid(root, "policyNamespaces");
+  const tgt = kid(nsEl, "target");
+  if (tgt){ model.target = { prefix: attr(tgt, "prefix"), namespace: attr(tgt, "namespace") }; }
+  kids(nsEl, "using").forEach(u => model.usings.push({ prefix: attr(u, "prefix"), namespace: attr(u, "namespace") }));
+
+  // supportedOn definitions (trimming keeps only the referenced ones).
+  const soDefs = kid(kid(root, "supportedOn"), "definitions");
+  kids(soDefs, "definition").forEach(d =>
+    model.supportedOn.set(attr(d, "name"), { name: attr(d, "name"), displayName: attr(d, "displayName") }));
+
+  // categories -> parent/child tree. parentCategory ref may be name or prefix:name.
+  kids(kid(root, "categories"), "category").forEach(c => {
+    const pc = kid(c, "parentCategory");
+    model.categories.set(attr(c, "name"), {
+      name: attr(c, "name"),
+      displayName: attr(c, "displayName"),
+      explainText: attr(c, "explainText"),
+      parentRef: pc ? attr(pc, "ref") : "",
+    });
+  });
+
+  // policies.
+  kids(kid(root, "policies"), "policy").forEach(p => {
+    const pc = kid(p, "parentCategory");
+    const so = kid(p, "supportedOn");
+    const pol = {
+      name: attr(p, "name"),
+      class: attr(p, "class") || "Machine",
+      displayName: attr(p, "displayName"),
+      explainText: attr(p, "explainText"),
+      presentation: attr(p, "presentation"),
+      key: attr(p, "key"),
+      valueName: attr(p, "valueName"),
+      parentCategory: pc ? attr(pc, "ref") : "",
+      supportedOn: so ? attr(so, "ref") : "",
+      hasEnabledValue: !!kid(p, "enabledValue") || !!kid(p, "enabledList"),
+      elements: [],
+    };
+    const elsWrap = kid(p, "elements");
+    if (elsWrap){
+      for (let e = elsWrap.firstChild; e; e = e.nextSibling){
+        if (e.nodeType !== 1) continue;
+        pol.elements.push(parseElement(e));
+      }
+    }
+    // Class-qualified unique id: two policies may share a name across classes.
+    pol.uid = pol.class + ":" + pol.name;
+    model.policies.push(pol);
+  });
+
+  return model;
+}
+
+// Parse one <elements> child into a normalized descriptor.
+function parseElement(e){
+  const type = (e.localName || e.nodeName);
+  const el = {
+    type,
+    id: attr(e, "id"),
+    valueName: attr(e, "valueName"),
+    required: attr(e, "required") === "true",
+    minValue: e.getAttribute("minValue"),
+    maxValue: e.getAttribute("maxValue"),
+    maxLength: e.getAttribute("maxLength"),
+  };
+  if (type === "enum"){
+    el.items = kids(e, "item").map(it => {
+      const v = kid(it, "value");
+      let val = "", valType = "string";
+      if (v){
+        const s = kid(v, "string"), d = kid(v, "decimal"), ld = kid(v, "longDecimal");
+        if (s){ val = (s.textContent || "").trim(); valType = "string"; }
+        else if (d){ val = attr(d, "value"); valType = "decimal"; }
+        else if (ld){ val = attr(ld, "value"); valType = "longDecimal"; }
+      }
+      return { displayName: attr(it, "displayName"), value: val, valueType: valType };
+    });
+  } else if (type === "list"){
+    el.valuePrefix   = e.getAttribute("valuePrefix");
+    el.explicitValue = attr(e, "explicitValue") === "true";
+    el.additive      = attr(e, "additive") === "true";
+  }
+  return el;
+}
+
+/* ---------- 3a. Language: ADML (XML) ------------------------------------ */
+function parseADML(text){
+  const doc = parseXML(text);
+  const strings = new Map();
+  const presentations = new Map();
+  const sTable = doc.getElementsByTagName("stringTable")[0];
+  if (sTable) kids(sTable, "string").forEach(s => strings.set(attr(s, "id"), (s.textContent || "").trim()));
+  const pTable = doc.getElementsByTagName("presentationTable")[0];
+  if (pTable) kids(pTable, "presentation").forEach(p => {
+    const controls = [];
+    for (let c = p.firstChild; c; c = c.nextSibling){
+      if (c.nodeType !== 1) continue;
+      controls.push({ type: (c.localName || c.nodeName), refId: attr(c, "refId"), label: (c.textContent || "").trim() });
+    }
+    presentations.set(attr(p, "id"), controls);
+  });
+  return { strings, presentations, kind: "adml" };
+}
+
+/* ---------- 3b. Language: legacy ADM (text) ------------------------------
+ * The language role of an .adm is its trailing [strings] section, which maps
+ * bare IDs -> text (referenced as !!ID in the body and $(string.ID) in ADMX).
+ * We also read PART labels the same way. \n/\t escapes are unescaped.       */
+function parseADM(text){
+  const strings = new Map();
+  const lines = text.split(/\r?\n/);
+  let inStrings = false;
+  for (let raw of lines){
+    if (!inStrings){
+      if (/^\s*\[strings\]\s*$/i.test(raw)) inStrings = true;
+      continue;
+    }
+    const line = raw.replace(/^﻿/, "");
+    if (!line.trim() || /^\s*;/.test(line)) continue;   // blank / comment
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const id = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1);
+    // ADM string values may be wrapped in quotes and use \n \t escapes.
+    val = val.replace(/^"(.*)"$/, "$1").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"');
+    if (id) strings.set(id, val);
+  }
+  return { strings, presentations: new Map(), kind: "adm" };
+}
+
+// Resolve $(string.X) / $(presentation.X) / !!X against the strings map.
+// Anything unresolved falls back to the raw token rather than failing.
+function makeResolver(strings){
+  return function resolve(s){
+    if (s == null || s === "") return "";
+    return String(s)
+      .replace(/\$\(string\.([^)]+)\)/g, (m, id) => strings.has(id) ? strings.get(id) : m)
+      .replace(/!!([A-Za-z0-9_]+)/g,     (m, id) => strings.has(id) ? strings.get(id) : m);
+  };
+}
+
+/* ---------- 4. Category chain + OMA-URI ---------------------------------- */
+// Classify a parentCategory/supportedOn ref as local or external. A ref is
+// LOCAL when it is unprefixed, when its prefix equals the target prefix, or
+// when it uses a `using` prefix whose namespace equals the target namespace
+// (a legal self-reference). Genuinely foreign prefixes (windows:, another
+// vendor) are external and terminate the chain. Returns {local, name}.
+function resolveRef(model, ref){
+  if (!ref) return { local: false, name: "" };
+  const i = ref.indexOf(":");
+  if (i === -1) return { local: true, name: ref };
+  const prefix = ref.slice(0, i), name = ref.slice(i + 1);
+  if (prefix === model.target.prefix) return { local: true, name };
+  const u = (model.usings || []).find(x => x.prefix === prefix);
+  if (u && u.namespace && u.namespace === model.target.namespace) return { local: true, name };
+  return { local: false, name };
+}
+
+// Walk parentCategory refs upward, collecting LOCAL categories only,
+// returned top-down (using bare category names). External refs terminate.
+function categoryChain(model, policy){
+  const chain = [];
+  let ref = policy.parentCategory, guard = 0;
+  while (ref && guard++ < 200){
+    const r = resolveRef(model, ref);
+    if (!r.local) break;             // external (foreign) parent -> stop
+    const cat = model.categories.get(r.name);
+    if (!cat) break;                 // unresolved local ref -> stop
+    chain.unshift(cat.name);
+    ref = cat.parentRef;
+  }
+  return chain;
+}
+
+function classToRoot(cls, bothChoice){
+  if (cls === "User") return "User";
+  if (cls === "Both") return bothChoice === "User" ? "User" : "Device";
+  return "Device"; // Machine
+}
+
+// ./{Device|User}/Vendor/MSFT/Policy/Config/{App}~Policy~{CatChain}/{PolicyName}
+function configOmaUri(model, policy, appName, bothChoice){
+  const root = classToRoot(policy.class, bothChoice);
+  const chain = categoryChain(model, policy);
+  const area = [appName, "Policy", ...chain].join("~");
+  return `./${root}/Vendor/MSFT/Policy/Config/${area}/${policy.name}`;
+}
+function ingestionOmaUri(appName){
+  return `./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/${appName}/Policy/${appName}`;
+}
+
+/* ---------- 5. Config value XML ----------------------------------------- */
+function xmlEscAttr(s){
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/\r/g, "").replace(/\n/g, "&#10;");
+}
+const LIST_SEP = "&#xF000;"; // Intune list pair separator (U+F000), emitted as a char ref
+
+// Build the Config value XML from one policy's editor state.
+// cfg = { state:'enabled'|'disabled', values:{elId:...} }
+function configValueXml(policy, cfg){
+  if (!cfg || cfg.state === "disabled") return cfg && cfg.state === "disabled" ? "<disabled/>" : "";
+  if (cfg.state !== "enabled") return "";
+  let out = "<enabled/>";
+  for (const el of policy.elements){
+    out += elementDataXml(el, cfg.values ? cfg.values[el.id] : undefined);
+  }
+  return out;
+}
+
+function elementDataXml(el, value){
+  const id = el.id;
+  switch (el.type){
+    case "boolean": {
+      const b = (value === true || value === "true" || value === 1 || value === "1");
+      return `<data id="${xmlEscAttr(id)}" value="${b ? "true" : "false"}"/>`;
+    }
+    case "enum": {
+      // value carries the selected item's value (already the ADMX string/decimal).
+      if (value == null || value === "") return "";
+      return `<data id="${xmlEscAttr(id)}" value="${xmlEscAttr(value)}"/>`;
+    }
+    case "list": {
+      // The CSP list payload is ALWAYS alternating name/value pairs separated
+      // by U+F000. For explicitValue lists the admin supplies both name and
+      // value. For non-explicit lists the name is auto-generated as
+      // (valuePrefix + sequential index starting at 1) and the value is the
+      // admin's entry -> "1<sep>a<sep>2<sep>b" (empty prefix) etc.
+      const arr = Array.isArray(value) ? value : [];
+      const parts = [];
+      let idx = 1;
+      for (const row of arr){
+        if (el.explicitValue){
+          const k = row ? (row.k ?? "") : "";
+          const v = row ? (row.v ?? "") : "";
+          if (k === "" && v === "") continue;
+          parts.push(xmlEscAttr(k) + LIST_SEP + xmlEscAttr(v));
+        } else {
+          const v = (row && typeof row === "object") ? (row.v ?? "") : (row ?? "");
+          if (v === "" || v == null) continue;
+          const name = (el.valuePrefix || "") + idx;
+          idx++;
+          parts.push(xmlEscAttr(name) + LIST_SEP + xmlEscAttr(v));
+        }
+      }
+      if (!parts.length) return "";
+      return `<data id="${xmlEscAttr(id)}" value="${parts.join(LIST_SEP)}"/>`;
+    }
+    case "multiText": {
+      // Multi-valued string: entries joined by U+F000 (not newlines).
+      const arr = Array.isArray(value) ? value : (value ? String(value).split(/\n/) : []);
+      const parts = arr.filter(x => x !== "" && x != null).map(xmlEscAttr);
+      if (!parts.length) return "";
+      return `<data id="${xmlEscAttr(id)}" value="${parts.join(LIST_SEP)}"/>`;
+    }
+    default: { // text, decimal, longDecimal
+      if (value == null || value === "") return "";
+      return `<data id="${xmlEscAttr(id)}" value="${xmlEscAttr(value)}"/>`;
+    }
+  }
+}
+
+/* ---------- 5b. Validation: which enabled fields are incomplete? ---------
+ * Microsoft requires a value for every field the payload must carry. Returns
+ * an error message for one element, or null when it is acceptable to emit.  */
+function validateElement(el, value){
+  switch (el.type){
+    case "enum":
+      // A dropdown always needs an explicit selection.
+      return (value == null || value === "") ? "A selection is required" : null;
+    case "boolean":
+      return null; // always has a concrete true/false
+    case "list": {
+      const arr = Array.isArray(value) ? value : [];
+      const filled = arr.filter(r => el.explicitValue
+        ? (r && ((r.k ?? "") !== "" || (r.v ?? "") !== ""))
+        : (r && (typeof r === "object" ? (r.v ?? "") !== "" : String(r) !== "")));
+      if (el.required && filled.length === 0) return "At least one entry is required";
+      if (el.explicitValue){
+        for (const r of arr){
+          const hasK = r && (r.k ?? "") !== "", hasV = r && (r.v ?? "") !== "";
+          if (hasV && !hasK) return "Each row needs a name";
+          if (hasK && !hasV) return "Each row needs a value";
+        }
+      }
+      return null;
+    }
+    case "multiText": {
+      const arr = Array.isArray(value) ? value : (value ? String(value).split(/\n/) : []);
+      const lines = arr.filter(x => x !== "" && x != null);
+      return (el.required && lines.length === 0) ? "At least one line is required" : null;
+    }
+    default: { // text, decimal, longDecimal
+      const numeric = (el.type === "decimal" || el.type === "longDecimal");
+      const empty = (value == null || value === "");
+      if (empty) return el.required ? "A value is required" : null;
+      if (el.maxLength != null && String(value).length > Number(el.maxLength)) return "Exceeds max length " + el.maxLength;
+      if (numeric){
+        // ADMX decimal/longDecimal are unsigned integers within min/max.
+        if (!/^\d+$/.test(String(value).trim())) return "Must be a whole number";
+        const n = Number(value);
+        if (el.minValue != null && n < Number(el.minValue)) return "Minimum is " + el.minValue;
+        if (el.maxValue != null && n > Number(el.maxValue)) return "Maximum is " + el.maxValue;
+      }
+      return null;
+    }
+  }
+}
+// All incomplete elements for a policy's editor state ([] means ready to emit).
+function policyValueIssues(policy, cfg){
+  if (!cfg || cfg.state !== "enabled") return [];
+  const issues = [];
+  for (const el of policy.elements){
+    const msg = validateElement(el, cfg.values ? cfg.values[el.id] : undefined);
+    if (msg) issues.push({ id: el.id, msg });
+  }
+  return issues;
+}
+
+/* ---------- 6. Minimal ADMX (trim to referenced settings) ---------------- */
+// Returns { xml, ok, reason }. Includes only configured policies, the
+// transitive closure of their LOCAL ancestor categories, and only the
+// supportedOn definitions those policies reference.
+function buildMinimalADMX(rawAdmxText, model, configuredUids){
+  try {
+    const doc  = parseXML(rawAdmxText);
+    const root = doc.documentElement;
+    const ser  = new XMLSerializer();
+    const nodeUid = p => (attr(p, "class") || "Machine") + ":" + attr(p, "name");
+
+    // Retained policy set, matched by class-qualified id (source order kept).
+    const wanted = new Set(configuredUids);
+    const polNodes = kids(kid(root, "policies"), "policy").filter(p => wanted.has(nodeUid(p)));
+    if (!polNodes.length) return { ok: false, reason: "no configured policies" };
+
+    // Transitive closure of local ancestor categories + referenced definitions.
+    const catSet = new Set(), defSet = new Set();
+    for (const p of polNodes){
+      const pol = model.policies.find(x => x.uid === nodeUid(p));
+      if (pol){
+        // Climb the parentCategory chain, adding every LOCAL ancestor (self-
+        // prefixed refs count as local; foreign prefixes terminate).
+        let ref = pol.parentCategory, guard = 0;
+        while (ref && guard++ < 200){
+          const r = resolveRef(model, ref);
+          if (!r.local) break;
+          const cat = model.categories.get(r.name);
+          if (!cat) break;
+          catSet.add(cat.name);
+          ref = cat.parentRef;
+        }
+        // Keep only the supportedOn definition this policy actually references.
+        const so = kid(p, "supportedOn");
+        const soRef = so ? attr(so, "ref") : "";
+        if (soRef){
+          const rs = resolveRef(model, soRef);
+          if (rs.local && model.supportedOn.has(rs.name)) defSet.add(rs.name);
+        }
+      }
+    }
+
+    const catNodes = kids(kid(root, "categories"), "category").filter(c => catSet.has(attr(c, "name")));
+    const defNodesAll = kid(kid(root, "supportedOn"), "definitions");
+    const defNodes = kids(defNodesAll, "definition").filter(d => defSet.has(attr(d, "name")));
+
+    // Assemble a fresh, canonically-ordered policyDefinitions document.
+    // (policyNamespaces + resources are cloned verbatim; supersededAdm dropped.)
+    const nsNode  = kid(root, "policyNamespaces");
+    const resNode = kid(root, "resources");
+    const S = n => ser.serializeToString(n);
+
+    let x = `<policyDefinitions revision="${xmlEscAttr(model.revision || "1.0")}" schemaVersion="${xmlEscAttr(model.schemaVersion || "1.0")}">`;
+    if (nsNode)  x += S(nsNode);
+    if (resNode) x += S(resNode);
+    if (defNodes.length) x += "<supportedOn><definitions>" + defNodes.map(S).join("") + "</definitions></supportedOn>";
+    if (catNodes.length) x += "<categories>" + catNodes.map(S).join("") + "</categories>";
+    x += "<policies>" + polNodes.map(S).join("") + "</policies>";
+    x += "</policyDefinitions>";
+
+    // Validate well-formedness; re-serialize so output is normalized/compact.
+    const check = parseXML(x);
+    const out = new XMLSerializer().serializeToString(check.documentElement);
+    return { ok: true, xml: out, categories: [...catSet], definitions: [...defSet], policies: [...wanted] };
+  } catch (err){
+    return { ok: false, reason: err.message };
+  }
+}
+
+const API = {
+  decodeBuffer, parseXML, parseADMX, parseElement, parseADML, parseADM, makeResolver,
+  resolveRef, categoryChain, classToRoot, configOmaUri, ingestionOmaUri,
+  configValueXml, elementDataXml, validateElement, policyValueIssues,
+  buildMinimalADMX, xmlEscAttr, kids, kid, attr,
+};
+if (typeof module !== "undefined" && module.exports) module.exports = API;
+root.ADMX = API;
+})(typeof window !== "undefined" ? window : globalThis);
+/* ===================================================================== *
+ *  CORE END                                                             *
+ * ===================================================================== */
+</script>
+
+<script>
+/* ===================================================================== *
+ *  UI layer -- browser only. Uses window.ADMX (the core above).         *
+ * ===================================================================== */
+(function(){
+"use strict";
+const C = window.ADMX;
+const $ = s => document.querySelector(s);
+
+// Resolve a display string, but fall back to a plain name when it stays an
+// unresolved token (e.g. "$(string.X)" with no language file loaded).
+function resolvedOr(raw, fallback){
+  const r = state.resolve(raw);
+  if (!r || r === raw || r.indexOf("$(") !== -1 || /^!!/.test(r)) return fallback;
+  return r;
+}
+function polDisplay(p){ return resolvedOr(p.displayName, p.name); }
+
+// -------- application state --------
+const state = {
+  admxText: null, admxFileName: null, encInfo: null,
+  admlText: null, admlFileName: null, langKind: null,
+  model: null, strings: new Map(), presentations: new Map(), resolve: s => s,
+  tree: { roots: [], childrenOf: new Map(), polsOf: new Map() },
+  configured: new Map(),   // policyName -> {state, values, bothChoice}
+  selCategory: null, selPolicy: null, searchTerm: "",
+  appName: "app", profileName: "ADMX Ingestion", minimal: true,
+};
+
+// pending files before both are chosen
+const pending = { admx: null, adml: null };
+
+/* ---------------- file loading ---------------- */
+function readFileBuffer(file){
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error("Could not read " + file.name));
+    fr.readAsArrayBuffer(file);
+  });
+}
+
+async function handleFiles(fileList){
+  let gotAdmx = false, gotAdml = false;
+  for (const f of fileList){
+    const lower = f.name.toLowerCase();
+    try {
+      const buf = await readFileBuffer(f);
+      const dec = C.decodeBuffer(buf);
+      if (lower.endsWith(".admx") || (lower.endsWith(".xml") && /<policyDefinitions/i.test(dec.text))){
+        pending.admx = { text: dec.text, name: f.name, enc: dec }; gotAdmx = true;
+      } else if (lower.endsWith(".adml") || lower.endsWith(".adm") || lower.endsWith(".txt") ||
+                 (lower.endsWith(".xml") && /<policyDefinitionResources/i.test(dec.text))){
+        pending.adml = { text: dec.text, name: f.name, enc: dec, isAdm: lower.endsWith(".adm") }; gotAdml = true;
+      } else {
+        // fall back on content sniff
+        if (/<policyDefinitions/i.test(dec.text)){ pending.admx = { text: dec.text, name: f.name, enc: dec }; gotAdmx = true; }
+        else { pending.adml = { text: dec.text, name: f.name, enc: dec, isAdm: /^\s*(CLASS|CATEGORY)\b/im.test(dec.text) }; gotAdml = true; }
+      }
+    } catch (err){ showError("Failed to read " + f.name + ": " + err.message); }
+  }
+  refreshChips();
+  // Load ADMX first, then the language file may arrive later without losing work.
+  if (!state.model){
+    if (pending.admx) tryBuild();               // first import
+  } else if (gotAdmx){
+    if (confirmReplaceAdmx()) tryBuild();        // a different ADMX -> full rebuild
+  } else if (gotAdml){
+    applyLanguage(true);                         // language added/replaced in place
+  }
+}
+function confirmReplaceAdmx(){
+  return !state.configured.size ||
+    window.confirm("Loading a new ADMX will clear the settings you've configured. Continue?");
+}
+
+// (Re)parse the current language file and re-render, preserving configuration.
+// A malformed language file degrades gracefully (strings fall back to raw ids).
+function applyLanguage(announce){
+  hideError();
+  try {
+    if (!pending.adml){ return; }
+    const lang = pending.adml.isAdm ? C.parseADM(pending.adml.text) : C.parseADML(pending.adml.text);
+    state.strings = lang.strings; state.presentations = lang.presentations;
+    state.langKind = lang.kind; state.admlFileName = pending.adml.name;
+    state.resolve = C.makeResolver(state.strings);
+    if (announce) toast("Language file applied: " + pending.adml.name);
+  } catch (err){
+    state.strings = new Map(); state.presentations = new Map(); state.langKind = null;
+    state.resolve = C.makeResolver(state.strings);
+    showNotice("Language file '" + (pending.adml ? pending.adml.name : "") + "' could not be parsed (" +
+      err.message + "). Display names fall back to their raw ids.");
+  }
+  updateSrcInfo(); renderTree(); renderList(); renderEditor();
+}
+
+function refreshChips(){
+  $("#admxDot").className = pending.admx ? "ok" : "no";
+  $("#admxName").textContent = pending.admx ? pending.admx.name : "no ADMX";
+  $("#admlDot").className = pending.adml ? "ok" : "no";
+  $("#admlName").textContent = pending.adml ? pending.adml.name : "no language file";
+}
+
+function tryBuild(){
+  hideError(); hideNotice();
+  let model;
+  try {
+    model = C.parseADMX(pending.admx.text);
+  } catch (err){
+    showError("Could not parse ADMX: " + err.message);
+    return;
+  }
+  // ADMX is valid -> commit and reset per-import state.
+  state.admxText = pending.admx.text;
+  state.admxFileName = pending.admx.name;
+  state.encInfo = pending.admx.enc;
+  state.model = model;
+  state.configured = new Map();
+  state.selCategory = null; state.selPolicy = null; state.searchTerm = "";
+  state.strings = new Map(); state.presentations = new Map(); state.langKind = null; state.admlFileName = null;
+  state.resolve = C.makeResolver(state.strings);
+
+  // Language file is optional; parse it separately so a bad ADML never blocks
+  // the ADMX from loading.
+  if (pending.adml){
+    try {
+      const lang = pending.adml.isAdm ? C.parseADM(pending.adml.text) : C.parseADML(pending.adml.text);
+      state.strings = lang.strings; state.presentations = lang.presentations;
+      state.langKind = lang.kind; state.admlFileName = pending.adml.name;
+      state.resolve = C.makeResolver(state.strings);
+    } catch (err){
+      showNotice("Language file '" + pending.adml.name + "' could not be parsed (" + err.message +
+        "). Display names fall back to their raw ids -- you can add a valid one with '+ Language file'.");
+    }
+  }
+
+  // default app label = sanitized target prefix
+  state.appName = sanitizeAppName(state.model.target.prefix) || "app";
+  buildTreeIndex();
+  enterWorkspace();
+}
+
+/* ---------------- tree index ---------------- */
+function buildTreeIndex(){
+  const m = state.model;
+  const childrenOf = new Map(); // parentName -> [catName]
+  const roots = [];
+  for (const [name, cat] of m.categories){
+    const r = C.resolveRef(m, cat.parentRef);
+    if (cat.parentRef && r.local && m.categories.has(r.name)){
+      if (!childrenOf.has(r.name)) childrenOf.set(r.name, []);
+      childrenOf.get(r.name).push(name);
+    } else {
+      roots.push(name); // no parent, external parent, or unresolved -> root
+    }
+  }
+  const polsOf = new Map(); // catName -> [policy]
+  for (const p of m.policies){
+    const c = p.parentCategory;
+    if (!polsOf.has(c)) polsOf.set(c, []);
+    polsOf.get(c).push(p);
+  }
+  state.tree = { roots, childrenOf, polsOf };
+}
+
+// Does this category (or a descendant) contain a policy for the given pane class?
+function catHasClass(catName, cls, seen){
+  seen = seen || new Set();
+  if (seen.has(catName)) return false; seen.add(catName);
+  const pols = state.tree.polsOf.get(catName) || [];
+  if (pols.some(p => matchesClass(p.class, cls))) return true;
+  const ch = state.tree.childrenOf.get(catName) || [];
+  return ch.some(c => catHasClass(c, cls, seen));
+}
+function matchesClass(polClass, pane){
+  if (pane === "Machine") return polClass === "Machine" || polClass === "Both";
+  if (pane === "User") return polClass === "User" || polClass === "Both";
+  return true;
+}
+
+/* ---------------- rendering: tree ---------------- */
+const openNodes = new Set();
+function catLabel(name){
+  const cat = state.model.categories.get(name);
+  if (!cat) return name;
+  return resolvedOr(cat.displayName, name);
+}
+
+function renderTree(){
+  const t = $("#tree"); t.innerHTML = "";
+  t.appendChild(paneGroup("Computer Configuration", "Machine", "🖥"));
+  t.appendChild(paneGroup("User Configuration", "User", "👤"));
+}
+
+function paneGroup(title, cls, icon){
+  const wrap = document.createElement("div");
+  const h = document.createElement("div");
+  h.className = "grp-title";
+  h.innerHTML = `<span class="ic">${icon}</span>${title}`;
+  wrap.appendChild(h);
+  const rootCats = state.tree.roots
+    .filter(r => catHasClass(r, cls))
+    .sort((a, b) => catLabel(a).localeCompare(catLabel(b)));
+  if (!rootCats.length){
+    const e = document.createElement("div"); e.className = "tempty"; e.textContent = "No settings";
+    wrap.appendChild(e);
+  } else {
+    for (const r of rootCats) wrap.appendChild(renderCatNode(r, cls, 0));
+  }
+  return wrap;
+}
+
+function renderCatNode(name, cls, depth){
+  const node = document.createElement("div");
+  node.className = "tnode";
+  const children = (state.tree.childrenOf.get(name) || []).filter(c => catHasClass(c, cls))
+    .sort((a, b) => catLabel(a).localeCompare(catLabel(b)));
+  const directPols = (state.tree.polsOf.get(name) || []).filter(p => matchesClass(p.class, cls));
+  const key = cls + "/" + name;
+  const isOpen = openNodes.has(key) || depth === 0;
+  if (depth === 0) openNodes.add(key);
+
+  const row = document.createElement("div");
+  row.className = "trow" + (state.selCategory && state.selCategory.name === name && state.selCategory.cls === cls ? " sel" : "");
+  const tw = document.createElement("span");
+  tw.className = "twist" + (isOpen ? " open" : "");
+  tw.textContent = children.length ? "▶" : "";
+  row.appendChild(tw);
+  const nm = document.createElement("span");
+  nm.className = "tname"; nm.textContent = catLabel(name);
+  row.appendChild(nm);
+  if (directPols.length){
+    const cnt = document.createElement("span");
+    cnt.className = "tcount"; cnt.textContent = directPols.length;
+    row.appendChild(cnt);
+  }
+  node.appendChild(row);
+
+  const childWrap = document.createElement("div");
+  childWrap.className = "tchildren";
+  childWrap.style.display = isOpen ? "" : "none";
+  for (const c of children) childWrap.appendChild(renderCatNode(c, cls, depth + 1));
+  node.appendChild(childWrap);
+
+  tw.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const nowOpen = childWrap.style.display === "none";
+    childWrap.style.display = nowOpen ? "" : "none";
+    tw.classList.toggle("open", nowOpen);
+    if (nowOpen) openNodes.add(key); else openNodes.delete(key);
+  });
+  row.addEventListener("click", () => {
+    state.selCategory = { name, cls };
+    state.searchTerm = ""; $("#search").value = "";
+    renderTree(); renderList();
+  });
+  return node;
+}
+
+/* ---------------- rendering: settings list ---------------- */
+// Visible state for a policy row, including an 'incomplete' state when a
+// policy is Enabled but a required field/selection is missing or invalid.
+function policyDisplayState(p){
+  const c = state.configured.get(p.uid);
+  if (!c) return "notconf";
+  if (c.state === "enabled" && C.policyValueIssues(p, c).length) return "incomplete";
+  return c.state;
+}
+
+function renderList(){
+  const list = $("#settingsList");
+  const crumb = $("#crumb");
+  list.innerHTML = "";
+  let policies = [], title = "";
+
+  if (state.searchTerm){
+    const q = state.searchTerm.toLowerCase();
+    policies = state.model.policies.filter(p => polDisplay(p).toLowerCase().includes(q));
+    crumb.innerHTML = `Search results for <b>${escapeHtml(state.searchTerm)}</b> &middot; ${policies.length}`;
+  } else if (state.selCategory){
+    const { name, cls } = state.selCategory;
+    policies = (state.tree.polsOf.get(name) || []).filter(p => matchesClass(p.class, cls));
+    crumb.innerHTML = `<b>${cls === "Machine" ? "Computer" : "User"}</b> &rsaquo; ${escapeHtml(catLabel(name))}`;
+    title = name;
+  } else {
+    crumb.textContent = "Select a category";
+  }
+
+  if (!policies.length){
+    const e = document.createElement("div");
+    e.className = "ed-empty"; e.textContent = state.searchTerm ? "No settings match your search." : "No settings in this category.";
+    list.appendChild(e); return;
+  }
+  policies.sort((a, b) => polDisplay(a).localeCompare(polDisplay(b)));
+  for (const p of policies) list.appendChild(renderSettingRow(p));
+}
+
+const BADGE_TEXT = { enabled: "Enabled", disabled: "Disabled", incomplete: "Incomplete", notconf: "Not configured" };
+function renderSettingRow(p){
+  const st = policyDisplayState(p);
+  const row = document.createElement("div");
+  row.className = "srow st-" + st + (state.selPolicy && state.selPolicy.uid === p.uid ? " sel" : "");
+  const dot = document.createElement("span"); dot.className = "sicon"; row.appendChild(dot);
+  const info = document.createElement("div"); info.className = "sinfo";
+  const nm = document.createElement("div"); nm.className = "sname"; nm.textContent = polDisplay(p);
+  const meta = document.createElement("div"); meta.className = "smeta"; meta.textContent = p.name + " · " + p.class;
+  info.appendChild(nm); info.appendChild(meta); row.appendChild(info);
+  const b = document.createElement("span");
+  b.className = "badge " + (st === "notconf" ? "" : st);
+  b.textContent = BADGE_TEXT[st];
+  row.appendChild(b);
+  row.addEventListener("click", () => { state.selPolicy = p; renderList(); renderEditor(); });
+  return row;
+}
+
+/* ---------------- rendering: editor ---------------- */
+function labelForElement(policy, el){
+  // Prefer an ADML presentation control label; else the ADM/ADMX string keyed
+  // by the element id; else the raw id.
+  if (policy.presentation){
+    const pid = (policy.presentation.match(/\$\(presentation\.([^)]+)\)/) || [])[1];
+    const controls = state.presentations.get(pid) || [];
+    const ctl = controls.find(c => c.refId === el.id);
+    if (ctl && ctl.label) return ctl.label.replace(/:$/, "");
+  }
+  return resolvedOr("$(string." + el.id + ")", el.id);
+}
+
+function renderEditor(){
+  const ed = $("#editor");
+  const p = state.selPolicy;
+  if (!p){ ed.innerHTML = '<div class="ed-empty">Select a setting to configure it.</div>'; $("#explain").style.display = "none"; return; }
+  const cfg = state.configured.get(p.uid) || { state: "notconf", values: {}, bothChoice: "Device" };
+
+  ed.innerHTML = "";
+  const wrap = document.createElement("div"); wrap.className = "ed";
+  const h = document.createElement("h2"); h.textContent = polDisplay(p);
+  const sub = document.createElement("div"); sub.className = "ed-sub";
+  const def = p.supportedOn ? state.model.supportedOn.get(p.supportedOn) : null;
+  const supText = def ? resolvedOr(def.displayName, p.supportedOn) : p.supportedOn;
+  sub.textContent = p.name + "  ·  class=" + p.class + (supText ? "  ·  " + supText : "");
+  wrap.appendChild(h); wrap.appendChild(sub);
+
+  // Both -> Device/User target toggle
+  if (p.class === "Both"){
+    const ct = document.createElement("div"); ct.className = "class-toggle";
+    ct.innerHTML = `<span>Target:</span>`;
+    const seg = document.createElement("div"); seg.className = "seg";
+    ["Device", "User"].forEach(v => {
+      const b = document.createElement("button"); b.textContent = v;
+      if ((cfg.bothChoice || "Device") === v) b.classList.add("on");
+      b.onclick = () => { cfg.bothChoice = v; state.configured.set(p.uid, cfg); renderEditor(); updateCounts(); };
+      seg.appendChild(b);
+    });
+    ct.appendChild(seg); wrap.appendChild(ct);
+  }
+
+  // three-state selector
+  const states = document.createElement("div"); states.className = "states";
+  [["notconf", "Not configured"], ["enabled", "Enabled"], ["disabled", "Disabled"]].forEach(([s, lbl]) => {
+    const b = document.createElement("button");
+    b.className = "state-btn" + (cfg.state === s ? " on" : ""); b.dataset.s = s;
+    b.innerHTML = `<span class="dot"></span>${lbl}`;
+    b.onclick = () => {
+      cfg.state = s;
+      if (s === "notconf") state.configured.delete(p.uid);
+      else state.configured.set(p.uid, cfg);
+      renderEditor(); renderList(); renderTree(); updateCounts();
+    };
+    states.appendChild(b);
+  });
+  wrap.appendChild(states);
+
+  // elements (only when enabled and there are inputs)
+  if (cfg.state === "enabled" && p.elements.length){
+    const box = document.createElement("div"); box.className = "elements";
+    for (const el of p.elements) box.appendChild(renderElementInput(p, el, cfg));
+    wrap.appendChild(box);
+  }
+
+  // completeness summary: list missing/invalid fields blocking this policy.
+  if (cfg.state === "enabled"){
+    const issues = C.policyValueIssues(p, cfg);
+    if (issues.length){
+      const box = document.createElement("div"); box.className = "ed-issues";
+      const labels = new Map(p.elements.map(el => [el.id, labelForElement(p, el)]));
+      box.innerHTML = "<b>This setting is incomplete and will be excluded from output:</b><ul>" +
+        issues.map(i => "<li>" + escapeHtml(labels.get(i.id) || i.id) + " — " + escapeHtml(i.msg) + "</li>").join("") + "</ul>";
+      wrap.appendChild(box);
+    }
+  }
+  ed.appendChild(wrap);
+
+  // explain pane
+  const ex = state.resolve(p.explainText);
+  $("#explain").style.display = "";
+  $("#explainText").textContent = ex && ex !== p.explainText ? ex : (ex || "No explain text provided.");
+}
+
+function renderElementInput(policy, el, cfg){
+  const wrap = document.createElement("div"); wrap.className = "el";
+  const lbl = document.createElement("label");
+  lbl.innerHTML = escapeHtml(labelForElement(policy, el)) + (el.required ? ' <span class="req">*</span>' : "");
+  wrap.appendChild(lbl);
+  cfg.values = cfg.values || {};
+  // Persist a value and refresh the row badge / issue summary live.
+  const setVal = v => { cfg.values[el.id] = v; state.configured.set(policy.uid, cfg); };
+  const reflect = () => { renderList(); refreshIssueBanner(policy, cfg); };
+
+  if (el.type === "enum"){
+    const sel = document.createElement("select");
+    const none = document.createElement("option"); none.value = ""; none.textContent = "— select —"; sel.appendChild(none);
+    (el.items || []).forEach(it => {
+      const o = document.createElement("option");
+      o.value = it.value; o.textContent = state.resolve(it.displayName) || it.value;
+      if (cfg.values[el.id] === it.value) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => { setVal(sel.value); reflect(); };
+    wrap.appendChild(sel);
+  } else if (el.type === "boolean"){
+    const sel = document.createElement("select");
+    [["true", "True (enabled)"], ["false", "False (disabled)"]].forEach(([v, t]) => {
+      const o = document.createElement("option"); o.value = v; o.textContent = t;
+      if (String(cfg.values[el.id]) === v) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (cfg.values[el.id] == null){ setVal("true"); }
+    sel.onchange = () => { setVal(sel.value); reflect(); };
+    wrap.appendChild(sel);
+  } else if (el.type === "multiText"){
+    const ta = document.createElement("textarea"); ta.rows = 4; ta.placeholder = "One value per line";
+    ta.value = Array.isArray(cfg.values[el.id]) ? cfg.values[el.id].join("\n") : (cfg.values[el.id] || "");
+    ta.oninput = () => { setVal(ta.value.split(/\n/)); reflect(); };
+    wrap.appendChild(ta);
+  } else if (el.type === "list"){
+    wrap.appendChild(renderListEditor(policy, el, cfg));
+  } else {
+    // text / decimal / longDecimal
+    const inp = document.createElement("input");
+    const numeric = (el.type === "decimal" || el.type === "longDecimal");
+    inp.type = numeric ? "number" : "text";
+    inp.className = "mono";
+    if (numeric){
+      if (el.minValue != null) inp.min = el.minValue;
+      if (el.maxValue != null) inp.max = el.maxValue;
+    }
+    if (el.maxLength != null) inp.maxLength = el.maxLength;
+    if (cfg.values[el.id] != null) inp.value = cfg.values[el.id];
+    const errEl = document.createElement("div"); errEl.className = "err";
+    const validate = () => {
+      let msg = "";
+      const v = inp.value;
+      if (el.required && v === "") msg = "Required.";
+      else if (numeric && v !== ""){
+        const n = Number(v);
+        if (!Number.isFinite(n)) msg = "Must be a number.";
+        else if (el.minValue != null && n < Number(el.minValue)) msg = "Minimum is " + el.minValue + ".";
+        else if (el.maxValue != null && n > Number(el.maxValue)) msg = "Maximum is " + el.maxValue + ".";
+      } else if (el.maxLength != null && v.length > Number(el.maxLength)) msg = "Max " + el.maxLength + " chars.";
+      inp.classList.toggle("bad", !!msg); errEl.textContent = msg;
+    };
+    inp.oninput = () => { setVal(inp.value); validate(); reflect(); };
+    validate();
+    wrap.appendChild(inp);
+    const hintBits = [];
+    if (numeric && (el.minValue != null || el.maxValue != null)) hintBits.push("range " + (el.minValue ?? "?") + "–" + (el.maxValue ?? "?"));
+    if (el.valueName) hintBits.push("valueName=" + el.valueName);
+    if (hintBits.length){ const hn = document.createElement("div"); hn.className = "hint"; hn.textContent = hintBits.join("  ·  "); wrap.appendChild(hn); }
+    wrap.appendChild(errEl);
+  }
+  return wrap;
+}
+
+// key/value (or value-only) grid editor for <list> elements
+function renderListEditor(policy, el, cfg){
+  const box = document.createElement("div");
+  cfg.values[el.id] = Array.isArray(cfg.values[el.id]) ? cfg.values[el.id] : [];
+  const rows = cfg.values[el.id];
+  const grid = document.createElement("div"); grid.className = "gridlist";
+  const draw = () => {
+    grid.innerHTML = "";
+    rows.forEach((r, i) => {
+      const gr = document.createElement("div"); gr.className = "glrow";
+      gr.style.gridTemplateColumns = el.explicitValue ? "1fr 1fr auto" : "1fr auto";
+      if (el.explicitValue){
+        const k = document.createElement("input"); k.placeholder = "name"; k.className = "mono"; k.value = r.k || "";
+        k.oninput = () => { r.k = k.value; state.configured.set(policy.name, cfg); };
+        gr.appendChild(k);
+      }
+      const v = document.createElement("input"); v.placeholder = el.explicitValue ? "value" : "value"; v.className = "mono";
+      v.value = el.explicitValue ? (r.v || "") : (r.v ?? r ?? "");
+      v.oninput = () => { if (el.explicitValue) r.v = v.value; else rows[i] = { v: v.value }; state.configured.set(policy.name, cfg); };
+      gr.appendChild(v);
+      const del = document.createElement("button"); del.className = "mini"; del.textContent = "✕";
+      del.onclick = () => { rows.splice(i, 1); state.configured.set(policy.name, cfg); draw(); };
+      gr.appendChild(del);
+      grid.appendChild(gr);
+    });
+  };
+  draw();
+  box.appendChild(grid);
+  const add = document.createElement("button"); add.className = "mini"; add.style.marginTop = "7px"; add.textContent = "+ Add row";
+  add.onclick = () => { rows.push(el.explicitValue ? { k: "", v: "" } : { v: "" }); state.configured.set(policy.name, cfg); draw(); };
+  box.appendChild(add);
+  return box;
+}
+
+/* ---------------- counts / workspace transitions ---------------- */
+function updateCounts(){
+  $("#cfgCount").textContent = state.configured.size;
+  $("#genBtn").disabled = state.configured.size === 0;
+}
+function enterWorkspace(){
+  $("#landing").classList.add("hidden");
+  $("#workspace").classList.remove("hidden");
+  $("#footbar").classList.remove("hidden");
+  ["appNameField", "profileField", "minimalField"].forEach(id => $("#" + id).style.display = "");
+  $("#resetBtn").style.display = ""; $("#genBtn").style.display = "";
+  $("#appName").value = state.appName;
+  $("#profileName").value = state.profileName;
+  const langTxt = state.langKind ? (state.admlFileName + " (" + state.langKind.toUpperCase() + ")") : "no language file";
+  $("#srcInfo").textContent = state.admxFileName + " [" + state.encInfo.bom + "]  ·  " + langTxt;
+  renderTree(); renderList(); renderEditor(); updateCounts();
+}
+
+/* ---------------- output generation ---------------- */
+function buildRows(){
+  const app = state.appName || "app";
+  const rows = [];
+  const configuredNames = [...state.configured.keys()];
+
+  // ingestion row (only when >=1 configured)
+  let minResult = null, fullBytes = utf8Bytes(state.admxText);
+  if (configuredNames.length){
+    let admxValue = state.admxText;
+    if (state.minimal){
+      minResult = C.buildMinimalADMX(state.admxText, state.model, configuredNames);
+      if (minResult.ok) admxValue = minResult.xml;
+    }
+    rows.push({
+      kind: "ingestion",
+      title: "ADMX Ingestion (" + (state.minimal && minResult && minResult.ok ? "Minimal" : "Full") + ")",
+      omaUri: C.ingestionOmaUri(app),
+      dataType: "String",
+      value: admxValue,
+    });
+  }
+
+  // one row per configured setting
+  for (const name of configuredNames){
+    const p = state.model.policies.find(x => x.name === name);
+    if (!p) continue;
+    const cfg = state.configured.get(name);
+    rows.push({
+      kind: "setting",
+      title: state.resolve(p.displayName) || p.name,
+      omaUri: C.configOmaUri(state.model, p, app, cfg.bothChoice),
+      dataType: "String",
+      value: C.configValueXml(p, cfg),
+    });
+  }
+  return { rows, minResult, fullBytes };
+}
+
+function utf8Bytes(s){ return new TextEncoder().encode(s || "").length; }
+function fmtBytes(n){
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(2) + " MB";
+}
+
+function openDrawer(){
+  const { rows, minResult, fullBytes } = buildRows();
+  const body = $("#drawerBody"); body.innerHTML = "";
+
+  if (!rows.length){
+    body.innerHTML = '<div class="ed-empty">No settings configured yet. Enable or disable at least one setting.</div>';
+    showDrawer(); return;
+  }
+
+  // size readout
+  const ingestion = rows.find(r => r.kind === "ingestion");
+  const trimmedBytes = ingestion ? utf8Bytes(ingestion.value) : 0;
+  const stat = document.createElement("div"); stat.className = "size-readout";
+  const saved = fullBytes ? Math.max(0, Math.round((1 - trimmedBytes / fullBytes) * 100)) : 0;
+  stat.innerHTML =
+    `<div class="stat"><div class="k">Full ADMX</div><div class="v">${fmtBytes(fullBytes)}</div></div>` +
+    `<div class="stat"><div class="k">Ingested ADMX</div><div class="v">${fmtBytes(trimmedBytes)} <small>${state.minimal ? "minimal" : "full"}</small></div></div>` +
+    `<div class="stat win"><div class="k">Size reduction</div><div class="v">${state.minimal ? saved + "%" : "0%"}</div></div>` +
+    `<div class="stat"><div class="k">Rows</div><div class="v">${rows.length}</div></div>`;
+  body.appendChild(stat);
+
+  if (state.minimal && minResult && !minResult.ok){
+    const w = document.createElement("div"); w.className = "warn";
+    w.textContent = "Minimal ADMX could not be produced (" + minResult.reason + "). Fell back to the full ADMX for ingestion.";
+    body.appendChild(w);
+  }
+
+  rows.forEach((r, idx) => body.appendChild(renderOutputRow(r, idx)));
+  window._exportRows = rows;
+  showDrawer();
+}
+
+function renderOutputRow(r, idx){
+  const el = document.createElement("div"); el.className = "orow";
+  const h = document.createElement("div"); h.className = "orow-h";
+  h.innerHTML = `<span class="tag">${r.kind === "ingestion" ? "Ingestion" : "Setting"}</span><span class="otitle">${escapeHtml(r.title)}</span>`;
+  el.appendChild(h);
+  const b = document.createElement("div"); b.className = "orow-b";
+  b.appendChild(kvBlock("OMA-URI", r.omaUri));
+  b.appendChild(kvBlock("Data type", r.dataType));
+  const valTitle = r.kind === "ingestion" ? "Value (ingested ADMX)" : "Value";
+  b.appendChild(kvBlock(valTitle, r.value));
+  const acts = document.createElement("div"); acts.className = "orow-actions";
+  acts.appendChild(mkBtn("Copy OMA-URI", () => copy(r.omaUri)));
+  acts.appendChild(mkBtn("Copy value", () => copy(r.value)));
+  b.appendChild(acts);
+  el.appendChild(b);
+  return el;
+}
+function kvBlock(k, v){
+  const w = document.createElement("div"); w.className = "kv";
+  const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;
+  const vv = document.createElement("div"); vv.className = "val mono"; vv.textContent = v;
+  w.appendChild(kk); w.appendChild(vv); return w;
+}
+function mkBtn(t, fn){ const b = document.createElement("button"); b.className = "btn"; b.textContent = t; b.onclick = fn; return b; }
+
+/* ---------------- copy / export ---------------- */
+function copy(text){
+  const done = () => toast("Copied");
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done){
+  const ta = document.createElement("textarea"); ta.value = text;
+  ta.style.position = "fixed"; ta.style.opacity = "0"; document.body.appendChild(ta);
+  ta.select(); try { document.execCommand("copy"); done(); } catch (e){ toast("Copy failed"); }
+  document.body.removeChild(ta);
+}
+function downloadBlob(name, text, type){
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function exportJson(){
+  const rows = window._exportRows || buildRows().rows;
+  const payload = { profileName: state.profileName, appName: state.appName, minimal: state.minimal,
+    settings: rows.map(r => ({ omaUri: r.omaUri, dataType: r.dataType, value: r.value })) };
+  downloadBlob((state.appName || "admx") + "-omauri.json", JSON.stringify(payload, null, 2), "application/json");
+}
+function exportCsv(){
+  const rows = window._exportRows || buildRows().rows;
+  const esc = s => '"' + String(s).replace(/"/g, '""') + '"';
+  const lines = ["OMA-URI,DataType,Value"];
+  rows.forEach(r => lines.push([esc(r.omaUri), esc(r.dataType), esc(r.value)].join(",")));
+  downloadBlob((state.appName || "admx") + "-omauri.csv", lines.join("\r\n"), "text/csv");
+}
+function copyAll(){
+  const rows = window._exportRows || buildRows().rows;
+  const txt = rows.map(r => "OMA-URI: " + r.omaUri + "\nData type: " + r.dataType + "\nValue:\n" + r.value).join("\n\n----\n\n");
+  copy(txt);
+}
+
+/* ---------------- misc UI helpers ---------------- */
+function showDrawer(){ $("#drawer").classList.add("open"); $("#scrim").classList.add("open"); }
+function hideDrawer(){ $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open"); }
+function toast(msg){ const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 1400); }
+function showError(msg){ const e = $("#errbar"); e.classList.remove("hidden"); e.innerHTML = "⚠ " + escapeHtml(msg); }
+function hideError(){ $("#errbar").classList.add("hidden"); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+/* ---------------- wire up events ---------------- */
+function init(){
+  $("#pickAdmx").onclick = () => $("#admxInput").click();
+  $("#pickAdml").onclick = () => $("#admlInput").click();
+  $("#admxInput").onchange = e => handleFiles(e.target.files);
+  $("#admlInput").onchange = e => handleFiles(e.target.files);
+
+  const landing = $("#landing");
+  ["dragenter", "dragover"].forEach(ev => landing.addEventListener(ev, e => { e.preventDefault(); landing.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach(ev => landing.addEventListener(ev, e => { e.preventDefault(); if (ev === "drop" || e.target === landing) landing.classList.remove("drag"); }));
+  landing.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+  // allow dropping onto the whole document once loaded
+  document.addEventListener("dragover", e => e.preventDefault());
+  document.addEventListener("drop", e => { e.preventDefault(); if (!state.model && e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+  $("#appName").oninput = e => { state.appName = e.target.value.trim() || "app"; };
+  $("#profileName").oninput = e => { state.profileName = e.target.value; };
+  $("#search").oninput = e => { state.searchTerm = e.target.value.trim(); if (state.searchTerm) state.selCategory = null; renderList(); };
+
+  $("#minimalSeg").querySelectorAll("button").forEach(b => b.onclick = () => {
+    state.minimal = b.dataset.min === "1";
+    $("#minimalSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  });
+
+  $("#genBtn").onclick = openDrawer;
+  $("#viewConfigured").onclick = openDrawer;
+  $("#closeDrawer").onclick = hideDrawer;
+  $("#scrim").onclick = hideDrawer;
+  $("#copyAll").onclick = copyAll;
+  $("#exportJson").onclick = exportJson;
+  $("#exportCsv").onclick = exportCsv;
+  $("#resetBtn").onclick = () => location.reload();
+  document.addEventListener("keydown", e => { if (e.key === "Escape") hideDrawer(); });
+  refreshChips();
+}
+init();
+})();
+</script>
