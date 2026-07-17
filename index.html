@@ -230,6 +230,15 @@ header.top{
       <label>App / namespace label</label>
       <input id="appName" spellcheck="false" autocomplete="off">
     </div>
+    <div class="field" id="settingTypeField" style="display:none">
+      <label>Ingestion setting type</label>
+      <input id="settingType" spellcheck="false" autocomplete="off" list="settingTypeOpts">
+      <datalist id="settingTypeOpts"><option value="Policy"></option><option value="Preference"></option></datalist>
+    </div>
+    <div class="field" id="ingestIdField" style="display:none">
+      <label>Ingestion unique ID</label>
+      <input id="ingestId" spellcheck="false" autocomplete="off">
+    </div>
     <div class="field" id="profileField" style="display:none">
       <label>Profile name</label>
       <input id="profileName" spellcheck="false" autocomplete="off" style="font-family:var(--sans)">
@@ -583,8 +592,13 @@ function configOmaUri(model, policy, appName, bothChoice){
   const area = [appName, "Policy", ...chain].join("~");
   return `./${root}/Vendor/MSFT/Policy/Config/${area}/${policy.name}`;
 }
-function ingestionOmaUri(appName){
-  return `./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/${appName}/Policy/${appName}`;
+// The ADMXInstall path is .../ADMXInstall/{appName}/{settingType}/{uniqueId}.
+// appName MUST match the Config rows' {appName}~Policy~... prefix; settingType
+// and uniqueId are free (default "Policy" and appName) and never affect Config.
+function ingestionOmaUri(appName, settingType, uniqueId){
+  const st = settingType || "Policy";
+  const uid = uniqueId || appName;
+  return `./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/${appName}/${st}/${uid}`;
 }
 
 /* ---------- 5. Config value XML ----------------------------------------- */
@@ -825,6 +839,8 @@ const state = {
   configured: new Map(),   // policyName -> {state, values, bothChoice}
   selCategory: null, selPolicy: null, searchTerm: "",
   appName: "app", profileName: "ADMX Ingestion", minimal: true,
+  // ingestion (ADMXInstall) path parts: .../ADMXInstall/{appName}/{settingType}/{ingestId}
+  settingType: "Policy", ingestId: "app", ingestIdTouched: false,
 };
 
 // pending files before both are chosen
@@ -936,8 +952,11 @@ function tryBuild(){
     }
   }
 
-  // default app label = sanitized target prefix
+  // default app label = sanitized target prefix; ingestion parts default from it
   state.appName = sanitizeAppName(state.model.target.prefix) || "app";
+  state.settingType = "Policy";
+  state.ingestId = state.appName;
+  state.ingestIdTouched = false;
   buildTreeIndex();
   enterWorkspace();
 }
@@ -1339,9 +1358,11 @@ function enterWorkspace(){
   $("#landing").classList.add("hidden");
   $("#workspace").classList.remove("hidden");
   $("#footbar").classList.remove("hidden");
-  ["appNameField", "profileField", "minimalField"].forEach(id => $("#" + id).style.display = "");
+  ["appNameField", "settingTypeField", "ingestIdField", "profileField", "minimalField"].forEach(id => $("#" + id).style.display = "");
   $("#addLangBtn").style.display = ""; $("#resetBtn").style.display = ""; $("#genBtn").style.display = "";
   $("#appName").value = state.appName;
+  $("#settingType").value = state.settingType;
+  $("#ingestId").value = state.ingestId;
   $("#profileName").value = state.profileName;
   updateSrcInfo();
   renderTree(); renderList(); renderEditor(); updateCounts();
@@ -1386,7 +1407,7 @@ function buildRows(){
     rows.push({
       kind: "ingestion",
       title: "ADMX Ingestion (" + (state.minimal && minResult && minResult.ok ? "Minimal" : "Full") + ")",
-      omaUri: C.ingestionOmaUri(app),
+      omaUri: C.ingestionOmaUri(app, sanitizeAppName(state.settingType) || "Policy", sanitizeAppName(state.ingestId) || app),
       dataType: "String",
       value: admxValue,
     });
@@ -1505,7 +1526,9 @@ function downloadBlob(name, text, type){
 function currentRows(){ return lastRows || buildRows().rows; }
 function exportJson(){
   const rows = currentRows();
-  const payload = { profileName: state.profileName, appName: sanitizeAppName(state.appName), minimal: state.minimal,
+  const payload = { profileName: state.profileName, appName: sanitizeAppName(state.appName),
+    settingType: sanitizeAppName(state.settingType) || "Policy", ingestId: sanitizeAppName(state.ingestId) || sanitizeAppName(state.appName),
+    minimal: state.minimal,
     settings: rows.map(r => ({ omaUri: r.omaUri, dataType: r.dataType, value: r.value })) };
   downloadBlob((sanitizeAppName(state.appName) || "admx") + "-omauri.json", JSON.stringify(payload, null, 2), "application/json");
 }
@@ -1556,16 +1579,27 @@ function init(){
 
   $("#addLangBtn").onclick = () => $("#admlInput").click();
 
-  $("#appName").oninput = e => {
-    const raw = e.target.value, clean = sanitizeAppName(raw);
+  // Sanitize a path-segment field in place, showing a warning when characters
+  // are stripped. `assign` stores the cleaned value into state.
+  function wirePathField(inputId, fieldId, assign){
+    $("#" + inputId).oninput = e => {
+      const raw = e.target.value, clean = sanitizeAppName(raw);
+      assign(clean);
+      const fld = $("#" + fieldId); let w = fld.querySelector(".warnmsg");
+      if (clean !== raw){
+        if (e.target.value !== clean) e.target.value = clean;
+        if (!w){ w = document.createElement("div"); w.className = "warnmsg"; fld.appendChild(w); }
+        w.textContent = "Removed characters not allowed in an OMA-URI path.";
+      } else if (w){ w.remove(); }
+    };
+  }
+  wirePathField("appName", "appNameField", clean => {
     state.appName = clean || "app";
-    const fld = $("#appNameField"); let w = fld.querySelector(".warnmsg");
-    if (clean !== raw){
-      if (e.target.value !== clean) e.target.value = clean;
-      if (!w){ w = document.createElement("div"); w.className = "warnmsg"; fld.appendChild(w); }
-      w.textContent = "Removed characters not allowed in an OMA-URI path.";
-    } else if (w){ w.remove(); }
-  };
+    // keep the unique ID mirroring the app name until the user edits it directly
+    if (!state.ingestIdTouched){ state.ingestId = state.appName; $("#ingestId").value = state.appName; }
+  });
+  wirePathField("settingType", "settingTypeField", clean => { state.settingType = clean || "Policy"; });
+  wirePathField("ingestId", "ingestIdField", clean => { state.ingestIdTouched = true; state.ingestId = clean || (sanitizeAppName(state.appName) || "app"); });
   $("#profileName").oninput = e => { state.profileName = e.target.value; };
   $("#search").oninput = e => { state.searchTerm = e.target.value.trim(); if (state.searchTerm) state.selCategory = null; renderList(); };
 
