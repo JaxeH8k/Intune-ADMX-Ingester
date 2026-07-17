@@ -730,80 +730,133 @@ function policyValueIssues(policy, cfg){
   return issues;
 }
 
-/* ---------- 6. Minimal ADMX (trim to referenced settings) ---------------- */
-// Returns { xml, ok, reason }. Includes only configured policies, the
-// transitive closure of their LOCAL ancestor categories, and only the
-// supportedOn definitions those policies reference.
-function buildMinimalADMX(rawAdmxText, model, configuredUids){
+/* ---------- 6. Self-contained ADMX (trim + make ingestable) -------------- */
+// Returns { xml, ok, reason, severed }. Includes the requested policies (or ALL
+// when keepUids is null -> "Full" mode), the transitive closure of their LOCAL
+// ancestor categories, and only the supportedOn definitions they reference.
+//
+// Crucially, the result is made SELF-CONTAINED: any parentCategory / supportedOn
+// reference into a foreign namespace (e.g. a Chrome/GoogleUpdate ADMX pointing
+// at its base "Google:Cat_Google") is SEVERED, and the now-unused <using>
+// declarations dropped. An ADMX that references a namespace which isn't also
+// ingested fails on the device with 0x8000FFFF ("catastrophic failure"); severing
+// those refs (which never affect the Config OMA-URI, since its category path only
+// uses the LOCAL chain) makes ingestion succeed on its own.
+//
+// The root is shallow-cloned so ALL its attributes (including any default xmlns)
+// survive -- otherwise serialized children re-declare a conflicting namespace.
+function buildTrimmedADMX(rawAdmxText, model, keepUids){
   try {
     const doc  = parseXML(rawAdmxText);
     const root = doc.documentElement;
     const ser  = new XMLSerializer();
     const nodeUid = p => (attr(p, "class") || "Machine") + ":" + attr(p, "name");
 
-    // Retained policy set, matched by class-qualified id (source order kept).
-    const wanted = new Set(configuredUids);
-    const polNodes = kids(kid(root, "policies"), "policy").filter(p => wanted.has(nodeUid(p)));
-    if (!polNodes.length) return { ok: false, reason: "no configured policies" };
+    const allPols = kids(kid(root, "policies"), "policy");
+    const wanted  = keepUids ? new Set(keepUids) : new Set(allPols.map(nodeUid));
+    const polNodes = allPols.filter(p => wanted.has(nodeUid(p)));
+    if (!polNodes.length) return { ok: false, reason: "no policies to include" };
 
     // Transitive closure of local ancestor categories + referenced definitions.
     const catSet = new Set(), defSet = new Set();
     for (const p of polNodes){
       const pol = model.policies.find(x => x.uid === nodeUid(p));
-      if (pol){
-        // Climb the parentCategory chain, adding every LOCAL ancestor (self-
-        // prefixed refs count as local; foreign prefixes terminate).
-        let ref = pol.parentCategory, guard = 0;
-        while (ref && guard++ < 200){
-          const r = resolveRef(model, ref);
-          if (!r.local) break;
-          const cat = model.categories.get(r.name);
-          if (!cat) break;
-          catSet.add(cat.name);
-          ref = cat.parentRef;
-        }
-        // Keep only the supportedOn definition this policy actually references.
-        const so = kid(p, "supportedOn");
-        const soRef = so ? attr(so, "ref") : "";
-        if (soRef){
-          const rs = resolveRef(model, soRef);
-          if (rs.local && model.supportedOn.has(rs.name)) defSet.add(rs.name);
-        }
+      if (!pol) continue;
+      let ref = pol.parentCategory, guard = 0;
+      while (ref && guard++ < 200){
+        const r = resolveRef(model, ref);
+        if (!r.local) break;
+        const cat = model.categories.get(r.name);
+        if (!cat) break;
+        catSet.add(cat.name);
+        ref = cat.parentRef;
+      }
+      const so = kid(p, "supportedOn");
+      const soRef = so ? attr(so, "ref") : "";
+      if (soRef){
+        const rs = resolveRef(model, soRef);
+        if (rs.local && model.supportedOn.has(rs.name)) defSet.add(rs.name);
       }
     }
 
-    const catNodes = kids(kid(root, "categories"), "category").filter(c => catSet.has(attr(c, "name")));
-    const defNodesAll = kid(kid(root, "supportedOn"), "definitions");
-    const defNodes = kids(defNodesAll, "definition").filter(d => defSet.has(attr(d, "name")));
-
-    // Assemble a fresh, canonically-ordered policyDefinitions document.
-    // (policyNamespaces + resources are cloned verbatim; supersededAdm dropped.)
+    let severed = 0;
+    const newRoot = root.cloneNode(false); // preserves revision/schemaVersion/xmlns
     const nsNode  = kid(root, "policyNamespaces");
     const resNode = kid(root, "resources");
-    const S = n => ser.serializeToString(n);
+    const nsClone = nsNode ? nsNode.cloneNode(true) : null;
 
-    let x = `<policyDefinitions revision="${xmlEscAttr(model.revision || "1.0")}" schemaVersion="${xmlEscAttr(model.schemaVersion || "1.0")}">`;
-    if (nsNode)  x += S(nsNode);
-    if (resNode) x += S(resNode);
-    if (defNodes.length) x += "<supportedOn><definitions>" + defNodes.map(S).join("") + "</definitions></supportedOn>";
-    if (catNodes.length) x += "<categories>" + catNodes.map(S).join("") + "</categories>";
-    x += "<policies>" + polNodes.map(S).join("") + "</policies>";
-    x += "</policyDefinitions>";
+    // supportedOn: keep only referenced definitions.
+    let soClone = null;
+    const soNode = kid(root, "supportedOn");
+    if (defSet.size && soNode){
+      soClone = soNode.cloneNode(true);
+      const defs = kid(soClone, "definitions");
+      if (defs) kids(defs, "definition").forEach(d => { if (!defSet.has(attr(d, "name"))) defs.removeChild(d); });
+    }
 
-    // Validate well-formedness; re-serialize so output is normalized/compact.
-    const check = parseXML(x);
-    const out = new XMLSerializer().serializeToString(check.documentElement);
-    return { ok: true, xml: out, categories: [...catSet], definitions: [...defSet], policies: [...wanted] };
+    // categories: keep the closure; sever any parent that isn't a retained LOCAL
+    // category (foreign namespace or excluded) -> that category becomes a root.
+    let catClone = null;
+    const catsNode = kid(root, "categories");
+    if (catSet.size && catsNode){
+      catClone = catsNode.cloneNode(true);
+      kids(catClone, "category").forEach(c => {
+        if (!catSet.has(attr(c, "name"))){ catClone.removeChild(c); return; }
+        const pc = kid(c, "parentCategory");
+        if (pc){
+          const r = resolveRef(model, attr(pc, "ref"));
+          if (!(r.local && catSet.has(r.name))){ c.removeChild(pc); severed++; }
+        }
+      });
+    }
+
+    // policies: keep the wanted set; sever supportedOn refs we can't satisfy.
+    const polClone = kid(root, "policies").cloneNode(true);
+    kids(polClone, "policy").forEach(p => {
+      if (!wanted.has(nodeUid(p))){ polClone.removeChild(p); return; }
+      const so = kid(p, "supportedOn");
+      if (so){
+        const r = resolveRef(model, attr(so, "ref"));
+        if (!(r.local && model.supportedOn.has(r.name))){ p.removeChild(so); severed++; }
+      }
+    });
+
+    // Assemble in canonical schema order.
+    if (nsClone)  newRoot.appendChild(nsClone);
+    if (resNode)  newRoot.appendChild(resNode.cloneNode(true));
+    if (soClone)  newRoot.appendChild(soClone);
+    if (catClone) newRoot.appendChild(catClone);
+    newRoot.appendChild(polClone);
+
+    // Drop <using> namespaces no longer referenced by any retained ref, so the
+    // ADMX declares no dependency on base files that aren't ingested.
+    if (nsClone){
+      const target = kid(nsClone, "target");
+      const targetPrefix = target ? attr(target, "prefix") : "";
+      const scan = [soClone, catClone, polClone].filter(Boolean).map(n => ser.serializeToString(n)).join("");
+      kids(nsClone, "using").forEach(u => {
+        const pfx = attr(u, "prefix");
+        if (pfx && pfx !== targetPrefix && !scan.includes('"' + pfx + ':')) nsClone.removeChild(u);
+      });
+    }
+
+    // Collapse inter-tag whitespace (ADMX carries all data in attributes, so no
+    // text content is significant) to keep the ingested payload small.
+    const out = ser.serializeToString(newRoot).replace(/>\s+</g, "><");
+    parseXML(out); // well-formedness check
+    return { ok: true, xml: out, severed, categories: [...catSet], definitions: [...defSet], policies: [...wanted] };
   } catch (err){
     return { ok: false, reason: err.message };
   }
 }
+function buildMinimalADMX(rawAdmxText, model, configuredUids){ return buildTrimmedADMX(rawAdmxText, model, configuredUids); }
+function buildFullADMX(rawAdmxText, model){ return buildTrimmedADMX(rawAdmxText, model, null); }
 
 const API = {
   decodeBuffer, parseXML, parseADMX, parseElement, parseADML, parseADM, makeResolver,
   humanizeId, resolveRef, categoryChain, classToRoot, configOmaUri, ingestionOmaUri,
   configValueXml, elementDataXml, validateElement, policyValueIssues,
-  buildMinimalADMX, xmlEscAttr, kids, kid, attr,
+  buildTrimmedADMX, buildMinimalADMX, buildFullADMX, xmlEscAttr, kids, kid, attr,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.ADMX = API;
@@ -1397,19 +1450,19 @@ function buildRows(){
   }
 
   // ingestion row references only the policies actually emitted.
+  // Both modes go through the self-contained builder: verbatim ("full") ADMX
+  // with external namespace refs would fail ingestion the same way minimal would.
   let minResult = null, fullBytes = utf8Bytes(state.admxText);
   if (ready.length){
-    let admxValue = state.admxText;
-    if (state.minimal){
-      minResult = C.buildMinimalADMX(state.admxText, state.model, ready.map(r => r.p.uid));
-      if (minResult.ok) admxValue = minResult.xml;
-    }
+    minResult = state.minimal
+      ? C.buildMinimalADMX(state.admxText, state.model, ready.map(r => r.p.uid))
+      : C.buildFullADMX(state.admxText, state.model);
     rows.push({
       kind: "ingestion",
-      title: "ADMX Ingestion (" + (state.minimal && minResult && minResult.ok ? "Minimal" : "Full") + ")",
+      title: "ADMX Ingestion (" + (state.minimal ? "Minimal" : "Full") + (minResult && minResult.ok ? "" : " — raw fallback") + ")",
       omaUri: C.ingestionOmaUri(app, sanitizeAppName(state.settingType) || "Policy", sanitizeAppName(state.ingestId) || app),
       dataType: "String",
-      value: admxValue,
+      value: (minResult && minResult.ok) ? minResult.xml : state.admxText,
     });
   }
 
@@ -1456,14 +1509,20 @@ function openDrawer(){
   stat.innerHTML =
     `<div class="stat"><div class="k">Full ADMX</div><div class="v">${fmtBytes(fullBytes)}</div></div>` +
     `<div class="stat"><div class="k">Ingested ADMX</div><div class="v">${fmtBytes(trimmedBytes)} <small>${state.minimal ? "minimal" : "full"}</small></div></div>` +
-    `<div class="stat win"><div class="k">Size reduction</div><div class="v">${state.minimal ? saved + "%" : "0%"}</div></div>` +
+    `<div class="stat win"><div class="k">Size reduction</div><div class="v">${saved}%</div></div>` +
     `<div class="stat"><div class="k">Rows</div><div class="v">${rows.length}</div></div>`;
   body.appendChild(stat);
 
-  if (state.minimal && minResult && !minResult.ok){
+  if (minResult && !minResult.ok){
     const w = document.createElement("div"); w.className = "warn";
-    w.textContent = "Minimal ADMX could not be produced (" + minResult.reason + "). Fell back to the full ADMX for ingestion.";
+    w.textContent = "Self-contained ADMX could not be produced (" + minResult.reason + "). Fell back to the raw ADMX — it may fail to ingest if it references other ADMX namespaces.";
     body.appendChild(w);
+  } else if (minResult && minResult.ok && minResult.severed){
+    const n = document.createElement("div");
+    n.style.cssText = "margin:8px 0;padding:8px 10px;border-radius:6px;font-size:12px;line-height:1.5;background:var(--accent-soft);color:var(--text)";
+    n.textContent = "Made self-contained for ingestion: severed " + minResult.severed +
+      " external reference(s) into namespaces from other ADMX files and dropped the unused <using> declaration(s). This is what lets Windows ingest the ADMX on its own (avoids 0x8000FFFF).";
+    body.appendChild(n);
   }
 
   rows.forEach((r, idx) => body.appendChild(renderOutputRow(r, idx)));
