@@ -785,14 +785,12 @@ function buildTrimmedADMX(rawAdmxText, model, keepUids){
     const resNode = kid(root, "resources");
     const nsClone = nsNode ? nsNode.cloneNode(true) : null;
 
-    // supportedOn: keep only referenced definitions.
-    let soClone = null;
-    const soNode = kid(root, "supportedOn");
-    if (defSet.size && soNode){
-      soClone = soNode.cloneNode(true);
-      const defs = kid(soClone, "definitions");
-      if (defs) kids(defs, "definition").forEach(d => { if (!defSet.has(attr(d, "name"))) defs.removeChild(d); });
-    }
+    // supportedOn is intentionally DROPPED entirely. The Policy CSP only accepts
+    // the inbox "windows:" supportedOn definitions; a locally-defined <supportedOn>
+    // (e.g. GoogleUpdate's "Sup_GoogleUpdate1_2_145_5") makes the ingested ADMX
+    // invalid and the device reports 0x8000FFFF ("catastrophic failure"/865). It
+    // carries no functional meaning in Intune, so the whole <supportedOn> block
+    // and every policy's <supportedOn> child are removed (see below).
 
     // categories: keep the closure; sever any parent that isn't a retained LOCAL
     // category (foreign namespace or excluded) -> that category becomes a root.
@@ -810,21 +808,17 @@ function buildTrimmedADMX(rawAdmxText, model, keepUids){
       });
     }
 
-    // policies: keep the wanted set; sever supportedOn refs we can't satisfy.
+    // policies: keep the wanted set; strip every <supportedOn> child.
     const polClone = kid(root, "policies").cloneNode(true);
     kids(polClone, "policy").forEach(p => {
       if (!wanted.has(nodeUid(p))){ polClone.removeChild(p); return; }
       const so = kid(p, "supportedOn");
-      if (so){
-        const r = resolveRef(model, attr(so, "ref"));
-        if (!(r.local && model.supportedOn.has(r.name))){ p.removeChild(so); severed++; }
-      }
+      if (so){ p.removeChild(so); severed++; }
     });
 
-    // Assemble in canonical schema order.
+    // Assemble in canonical schema order (no <supportedOn> block).
     if (nsClone)  newRoot.appendChild(nsClone);
     if (resNode)  newRoot.appendChild(resNode.cloneNode(true));
-    if (soClone)  newRoot.appendChild(soClone);
     if (catClone) newRoot.appendChild(catClone);
     newRoot.appendChild(polClone);
 
@@ -833,7 +827,7 @@ function buildTrimmedADMX(rawAdmxText, model, keepUids){
     if (nsClone){
       const target = kid(nsClone, "target");
       const targetPrefix = target ? attr(target, "prefix") : "";
-      const scan = [soClone, catClone, polClone].filter(Boolean).map(n => ser.serializeToString(n)).join("");
+      const scan = [catClone, polClone].filter(Boolean).map(n => ser.serializeToString(n)).join("");
       kids(nsClone, "using").forEach(u => {
         const pfx = attr(u, "prefix");
         if (pfx && pfx !== targetPrefix && !scan.includes('"' + pfx + ':')) nsClone.removeChild(u);
@@ -1520,9 +1514,16 @@ function openDrawer(){
   } else if (minResult && minResult.ok && minResult.severed){
     const n = document.createElement("div");
     n.style.cssText = "margin:8px 0;padding:8px 10px;border-radius:6px;font-size:12px;line-height:1.5;background:var(--accent-soft);color:var(--text)";
-    n.textContent = "Made self-contained for ingestion: severed " + minResult.severed +
-      " external reference(s) into namespaces from other ADMX files and dropped the unused <using> declaration(s). This is what lets Windows ingest the ADMX on its own (avoids 0x8000FFFF).";
+    n.textContent = "Made self-contained for ingestion: removed <supportedOn> definitions and any external base-ADMX category references (which the Policy CSP can't resolve) and dropped unused <using> declarations. This is required for Windows to ingest the ADMX without a 0x8000FFFF “invalid ADMX” (event 865) failure.";
     body.appendChild(n);
+  }
+
+  // The Policy CSP rejects an ingested ADMX value larger than ~35K characters.
+  const ingestChars = ingestion ? ingestion.value.length : 0;
+  if (ingestChars > 35000){
+    const w = document.createElement("div"); w.className = "warn";
+    w.textContent = "The ingested ADMX is " + ingestChars.toLocaleString() + " characters — over the Policy CSP's ~35,000 limit. Use Minimal mode and/or configure fewer policies, or the ingestion will fail.";
+    body.appendChild(w);
   }
 
   rows.forEach((r, idx) => body.appendChild(renderOutputRow(r, idx)));
